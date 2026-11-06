@@ -1,91 +1,59 @@
 /**
- * DYNAMIC GROUP TRAVEL EXPENSE SPLITTER
- * ------------------------------------------------------------------
- * Custom Menu: "Expense Splitter" (PC only - menus do NOT appear in
- * the Google Sheets mobile app. On mobile, use the
- * "All Expenses Confirmed" checkbox on the Setup sheet.)
+ * DYNAMIC GROUP TRAVEL EXPENSE SPLITTER — COMPLETE SCRIPT
  *
- * INSTALL:
- *   1. Extensions -> Apps Script -> paste this file -> Save
- *   2. Run setup() once and authorize ALL requested scopes
- *      (including "Send email as you" - required for reports)
- *   3. Reload the spreadsheet to see the "Expense Splitter" menu
- *
- * CONFIRM FLOW (single switch, not per-row):
- *   - Enter all expense rows on "Expenses" (no totals shown yet)
- *   - When done: tick Setup -> "All Expenses Confirmed" (B6)
- *     OR PC menu: Expense Splitter -> Confirm All Expenses
- *     OR assign confirmAllExpenses to an Insert -> Drawing button
- *   - Per-person columns + TOTAL row appear on the Expenses tab
- *   - Untick / "Re-open for Editing" hides totals again
- *
- * NOTE: the TOTAL label lives in the Description column because
- * column A has strict date validation which also blocks script writes.
- *
- * TROUBLESHOOTING:
- *   - "Fix Expenses Sheet Formatting" wipes stray formatting/validation
- *   - "Diagnose" reports the state of every moving part
+ * IMPORTANT
+ * - setup() / “Initialize / Reset Tracker” is the ONLY destructive action.
+ * - All other actions preserve your entered expense rows.
+ * - Money is calculated in integer paise/cents, not floating point.
+ * - This prevents blank, zero-value, and malformed settlement rows.
  */
 
-// Name of the configuration sheet tab
-const SHEET_SETUP = "Setup";
-// Name of the primary expense tracking sheet tab
-const SHEET_EXPENSES = "Expenses";
-// Name of the report summary and balance display sheet tab
-const SHEET_REPORTS = "Send Reports";
+const SHEET_SETUP = 'Setup';
+const SHEET_EXPENSES = 'Expenses';
+const SHEET_REPORTS = 'Send Reports';
 
-// 1-based column indices mapping input fields on the Expenses sheet
 const COL = { DATE: 1, DESC: 2, AMOUNT: 3, PAID_BY: 4, SPLIT: 5 };
-// 1-based column index where per-person calculated share columns begin (Column F)
-const FIRST_PERSON_COL = 6; // person share columns start at column F
-// Maximum number of data rows processed across operations
+const FIRST_PERSON_COL = 6;
+const SUMMARY_MIN_COL = 11;
+const SUMMARY_GAP = 1;
+const SUMMARY_WIDTH = 4;
 const MAX_DATA_ROWS = 500;
-// Cell coordinate on the Setup sheet housing the master confirmation checkbox
-const CONFIRM_CELL = "B6"; // Setup sheet master confirm checkbox
-// String marker applied to denote the summary total row
-const TOTAL_LABEL = "TOTAL"; // written to Description col (B), never Date col (A)
+const CONFIRM_CELL = 'B6';
 
-// Hex color code palette used across header styles, alert banners, and table highlights
 const COLOR = {
-  HEADER: "#0F766E",
-  HEADER_DARK: "#1E293B",
-  HEADER_MID: "#334155",
-  TOTAL_BG: "#E2E8F0",
-  GREEN_BG: "#D1FAE5", GREEN_TX: "#065F46",
-  RED_BG: "#FEE2E2",   RED_TX: "#991B1B",
-  GRAY_BG: "#F3F4F6",  GRAY_TX: "#374151",
-  WARN_TX: "#B45309",
-  PENDING: "#FEF3C7"
+  HEADER: '#0F766E',
+  HEADER_DARK: '#1E293B',
+  HEADER_MID: '#334155',
+  TOTAL_BG: '#E2E8F0',
+  GREEN_BG: '#D1FAE5',
+  GREEN_TX: '#065F46',
+  RED_BG: '#FEE2E2',
+  RED_TX: '#991B1B',
+  GRAY_BG: '#F3F4F6',
+  GRAY_TX: '#374151',
+  BLUE_BG: '#EFF6FF',
+  BLUE_TX: '#1E40AF',
+  WARN_BG: '#FEF3C7',
+  WARN_TX: '#B45309'
 };
 
-/**
- * UI-safe alert: getUi() throws without an open spreadsheet UI.
- * Falls back to a toast, then to the execution log.
- * @param {string} message - The text to display in the alert dialog, toast notification, or log.
- */
 function safeAlert(message) {
   try {
-    // Attempt to display a modal alert dialog in active UI
     SpreadsheetApp.getUi().alert(message);
-    return;
-  } catch (e) { /* no UI context — fall through */ }
-  try {
-    // Fall back to showing a non-intrusive toast message in the bottom-right corner
-    SpreadsheetApp.getActiveSpreadsheet().toast(message, "Expense Splitter", 10);
-  } catch (e2) {
-    // Fall back to server execution logs if no spreadsheet UI context exists
-    Logger.log(message);
+  } catch (err) {
+    try {
+      SpreadsheetApp.getActiveSpreadsheet().toast(message, 'Expense Splitter', 10);
+    } catch (toastError) {
+      Logger.log(message);
+    }
   }
 }
 
-/**
- * Creates custom menu when the spreadsheet opens (PC / desktop only).
- */
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Expense Splitter')
     .addItem('1. Initialize / Reset Tracker', 'setup')
-    .addItem('2. Recalculate Expenses & Settlements', 'recalculateAll')
+    .addItem('2. Recalculate Live Expenses', 'recalculateAll')
     .addSeparator()
     .addItem('Confirm All Expenses', 'confirmAllExpenses')
     .addItem('Re-open for Editing (Unconfirm)', 'unconfirmExpenses')
@@ -93,971 +61,819 @@ function onOpen() {
     .addItem('3. Send PDF Reports via Email', 'sendPdfReports')
     .addItem('Test Email Permission', 'testEmailPermission')
     .addSeparator()
-    .addItem('Fix Expenses Sheet Formatting', 'fixExpensesSheet')
-    .addItem('Diagnose', 'diagnose')
+    .addItem('Diagnose Settlement Data', 'diagnose')
     .addToUi();
 }
 
 /**
- * Health check: verifies the state of every piece and reports back.
- */
-function diagnose() {
-  // Reference active spreadsheet instance and collection array for diagnosis logs
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const lines = [];
-
-  // Retrieve sheets by constant names
-  const setupSheet = ss.getSheetByName(SHEET_SETUP);
-  const expenseSheet = ss.getSheetByName(SHEET_EXPENSES);
-  lines.push(`Setup sheet: ${setupSheet ? "found" : "MISSING"}`);
-  lines.push(`Expenses sheet: ${expenseSheet ? "found" : "MISSING"}`);
-
-  // Inspect Setup configuration sheet values
-  if (setupSheet) {
-    lines.push(`Confirmed checkbox (B6): ${setupSheet.getRange(CONFIRM_CELL).getValue()}`);
-    lines.push(`Setup status: ${setupSheet.getRange("B5").getValue()}`);
-  }
-
-  // Retrieve current active roster
-  const roster = getRoster();
-  lines.push(`Roster names: ${roster.length ? roster.map(r => r.name).join(", ") : "NONE"}`);
-
-  // Inspect Expenses sheet rows and cell properties
-  if (expenseSheet) {
-    lines.push(`Expense data rows: ${countDataRows_(expenseSheet)}`);
-
-    if (expenseSheet.getLastRow() > 1) {
-      // Sample row 2 values for diagnostic output
-      const r = expenseSheet.getRange(2, 1, 1, 5).getValues()[0];
-      lines.push(`Row 2 — Amount: "${r[2]}", Paid By: "${r[3]}", Split Among: "${r[4]}"`);
-    }
-
-    // Write test: can the script write to the person columns?
-    try {
-      // Test grid write permissions on standard range cell
-      const testCell = expenseSheet.getRange(MAX_DATA_ROWS, FIRST_PERSON_COL);
-      const old = testCell.getValue();
-      testCell.setValue("__test__");
-      testCell.setValue(old);
-      lines.push("Write test on person columns: OK");
-    } catch (err) {
-      lines.push(`Write test on person columns: FAILED — ${err.message}`);
-    }
-  }
-
-  // Present compiled diagnosis findings to the user
-  safeAlert("DIAGNOSIS:\n\n" + lines.join("\n"));
-}
-
-/**
- * Master initialization function.
+ * ONLY destructive action: clears all three managed sheets and builds again.
  */
 function setup() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  // Ensure necessary worksheets exist, creating them if missing
   const setupSheet = ss.getSheetByName(SHEET_SETUP) || ss.insertSheet(SHEET_SETUP);
-  ss.getSheetByName(SHEET_EXPENSES) || ss.insertSheet(SHEET_EXPENSES);
-  ss.getSheetByName(SHEET_REPORTS) || ss.insertSheet(SHEET_REPORTS);
+  const expenseSheet = ss.getSheetByName(SHEET_EXPENSES) || ss.insertSheet(SHEET_EXPENSES);
+  const reportsSheet = ss.getSheetByName(SHEET_REPORTS) || ss.insertSheet(SHEET_REPORTS);
 
-  // --- SETUP SHEET CONFIGURATION ---
   setupSheet.clear();
-  setupSheet.getRange("A1:B1").merge().setValue("TRIP CONFIGURATION")
-    .setBackground(COLOR.HEADER_DARK).setFontColor("#FFFFFF").setFontWeight("bold");
+  expenseSheet.clear();
+  reportsSheet.clear();
 
-  // Define key configuration elements on Setup tab
-  const configLabels = [
-    ["Trip Name / Destination:", "Goa Vacation 2026"],
-    ["Number of People:", 4],
-    ["Currency Symbol:", "₹"],
-    ["Setup Status:", "Checking..."],
-    ["All Expenses Confirmed:", false]
-  ];
-  setupSheet.getRange("A2:B6").setValues(configLabels);
-  setupSheet.getRange("A2:A6").setFontWeight("bold");
+  setupSheet.getRange('A1:B1').merge().setValue('TRIP CONFIGURATION')
+    .setBackground(COLOR.HEADER_DARK).setFontColor('#FFFFFF').setFontWeight('bold');
 
-  // Master confirm checkbox (mobile-friendly; menus are PC-only)
+  setupSheet.getRange('A2:B6').setValues([
+    ['Trip Name / Destination:', 'Goa Vacation 2026'],
+    ['Number of People:', 4],
+    ['Currency Symbol:', '₹'],
+    ['Setup Status:', 'Checking...'],
+    ['All Expenses Confirmed:', false]
+  ]);
+  setupSheet.getRange('A2:A6').setFontWeight('bold');
   setupSheet.getRange(CONFIRM_CELL).insertCheckboxes();
-  setupSheet.getRange("A6").setNote(
-    "Tick this AFTER entering all expenses. Totals and per-person splits appear only while this is ticked.");
+  setupSheet.getRange('A6').setNote(
+    'Tick after entering all expenses. This publishes the Send Reports sheet and enables PDF reports. Live calculations on Expenses always remain visible.'
+  );
 
-  // Number of people: true dropdown listing 2 to 15
-  const peopleOptions = [];
-  for (let i = 2; i <= 15; i++) peopleOptions.push(String(i));
-  const numPeopleRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(peopleOptions, true)
-    .setAllowInvalid(false)
-    .setHelpText("Pick the number of people (2 to 15).")
-    .build();
-  setupSheet.getRange("B3").setDataValidation(numPeopleRule);
+  const choices = [];
+  for (let i = 2; i <= 15; i++) choices.push(String(i));
+  setupSheet.getRange('B3').setDataValidation(
+    SpreadsheetApp.newDataValidation()
+      .requireValueInList(choices, true)
+      .setAllowInvalid(false)
+      .setHelpText('Pick the number of people (2 to 15).')
+      .build()
+  );
 
-  // Roster header — Email is OPTIONAL (needed only for PDF reports)
-  setupSheet.getRange("A8:C8").setValues([["#", "Name", "Email (optional)"]])
-    .setBackground(COLOR.HEADER_MID).setFontColor("#FFFFFF").setFontWeight("bold");
-
-  // Populate initial placeholder roster array
-  const initialRoster = [
-    [1, "Rahul", ""],
-    [2, "Priya", ""],
-    [3, "Amit", ""],
-    [4, "Neha", ""]
-  ];
-  setupSheet.getRange(9, 1, initialRoster.length, 3).setValues(initialRoster);
-
-  // Apply default font styling across sheet
-  applyRobotoFont(setupSheet);
+  setupSheet.getRange('A8:C8').setValues([['#', 'Name', 'Email (optional)']])
+    .setBackground(COLOR.HEADER_MID).setFontColor('#FFFFFF').setFontWeight('bold');
+  setupSheet.getRange(9, 1, 4, 3).setValues([
+    [1, 'Rahul', ''],
+    [2, 'Priya', ''],
+    [3, 'Amit', ''],
+    [4, 'Neha', '']
+  ]);
+  setupSheet.getDataRange().setFontFamily('Roboto').setFontSize(12);
   setupSheet.autoResizeColumns(1, 3);
 
-  // Validate values, adjust layout, and perform initial calculation pass
   validateSetupStatus();
   updateExpensesStructure();
-  recalculateAll();
-
-  safeAlert("Setup complete! Edit your Trip details and Roster in the 'Setup' tab.");
+  recalculateAll(true);
+  safeAlert('Tracker initialized. Enter names and expenses; live calculations update automatically.');
 }
 
-/**
- * Formats all populated cells in the sheet using the Roboto font at 12pt size.
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet - Target worksheet to format.
- */
-function applyRobotoFont(sheet) {
-  const range = sheet.getDataRange();
-  if (range.getNumRows() && range.getNumColumns()) {
-    range.setFontFamily("Roboto").setFontSize(12);
-  }
-}
-
-/**
- * True only when the master "All Expenses Confirmed" checkbox is ticked.
- * @returns {boolean} Status of the master checkbox in B6 on Setup tab.
- */
 function isExpensesConfirmed() {
   const setupSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP);
-  return setupSheet ? setupSheet.getRange(CONFIRM_CELL).getValue() === true : false;
+  return !!setupSheet && setupSheet.getRange(CONFIRM_CELL).getValue() === true;
 }
 
-/**
- * Validates trip config & roster names (emails are OPTIONAL).
- * @returns {boolean} True if setup inputs pass validation rules; false otherwise.
- */
+function getCurrencySymbol_() {
+  const setupSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP);
+  return setupSheet ? String(setupSheet.getRange('B4').getValue() || '₹') : '₹';
+}
+
+function getCurrencyFormat_() {
+  return `"${getCurrencySymbol_()}"#,##0.00`;
+}
+
+function getSummaryCol_(personCount) {
+  return Math.max(SUMMARY_MIN_COL, FIRST_PERSON_COL + personCount + SUMMARY_GAP);
+}
+
 function validateSetupStatus() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const setupSheet = ss.getSheetByName(SHEET_SETUP);
+  const setupSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP);
   if (!setupSheet) return false;
 
-  // Read essential configuration parameters
-  const tripName = setupSheet.getRange("B2").getValue();
-  const numPeople = parseInt(setupSheet.getRange("B3").getValue(), 10);
-  const currency = setupSheet.getRange("B4").getValue();
-  const statusCell = setupSheet.getRange("B5");
+  const tripName = String(setupSheet.getRange('B2').getValue()).trim();
+  const peopleCount = Number(setupSheet.getRange('B3').getValue());
+  const currency = String(setupSheet.getRange('B4').getValue()).trim();
+  const statusCell = setupSheet.getRange('B5');
 
-  // Evaluate required baseline field conditions
   if (!tripName) {
-    statusCell.setValue("❌ Missing Trip Name").setFontColor(COLOR.RED_TX).setFontWeight("normal");
+    statusCell.setValue('❌ Missing Trip Name').setFontColor(COLOR.RED_TX);
     return false;
   }
   if (!currency) {
-    statusCell.setValue("❌ Missing Currency Symbol").setFontColor(COLOR.RED_TX).setFontWeight("normal");
+    statusCell.setValue('❌ Missing Currency Symbol').setFontColor(COLOR.RED_TX);
     return false;
   }
-  if (!numPeople || numPeople < 2) {
-    statusCell.setValue("❌ Select Number of People").setFontColor(COLOR.RED_TX).setFontWeight("normal");
+  if (!Number.isInteger(peopleCount) || peopleCount < 2 || peopleCount > 15) {
+    statusCell.setValue('❌ Select 2–15 people').setFontColor(COLOR.RED_TX);
     return false;
   }
 
-  // Parse roster rows and scan for duplicates or empty entries
-  const rosterData = setupSheet.getRange(9, 1, numPeople, 3).getValues();
-  const names = [];
-  let namedCount = 0;
-
-  for (let i = 0; i < numPeople; i++) {
-    const name = String(rosterData[i][1]).trim();
-    if (!name) continue;
-    namedCount++;
-    if (names.includes(name.toLowerCase())) {
-      statusCell.setValue(`❌ Duplicate name found: "${name}"`).setFontColor(COLOR.RED_TX).setFontWeight("normal");
+  const rosterRows = setupSheet.getRange(9, 1, peopleCount, 3).getValues();
+  const seenNames = new Set();
+  for (let i = 0; i < rosterRows.length; i++) {
+    const name = String(rosterRows[i][1]).trim();
+    if (!name) {
+      statusCell.setValue(`⚠️ Missing name for Person #${i + 1}`).setFontColor(COLOR.WARN_TX);
       return false;
     }
-    names.push(name.toLowerCase());
+    const key = name.toLocaleLowerCase();
+    if (seenNames.has(key)) {
+      statusCell.setValue(`❌ Duplicate name: ${name}`).setFontColor(COLOR.RED_TX);
+      return false;
+    }
+    seenNames.add(key);
   }
 
-  // Validate complete presence of member names matching count requirement
-  if (namedCount < numPeople) {
-    statusCell.setValue(`⚠️ ${namedCount} of ${numPeople} people named — fill all names`)
-      .setFontColor(COLOR.WARN_TX).setFontWeight("normal");
-    return false;
-  }
-
-  // Set successful validation indicator
-  statusCell.setValue("Setup complete ✅").setFontColor("#166534").setFontWeight("bold");
+  statusCell.setValue('Setup complete ✅').setFontColor(COLOR.GREEN_TX).setFontWeight('bold');
   return true;
 }
 
-/**
- * Roster from Setup (rows 9+). Only rows WITH a name are returned.
- * @returns {Array<Object>} Array of objects containing id, name, and email for each person.
- */
 function getRoster() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const setupSheet = ss.getSheetByName(SHEET_SETUP);
+  const setupSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP);
   if (!setupSheet) return [];
 
-  const numPeople = parseInt(setupSheet.getRange("B3").getValue(), 10) || 0;
-  if (numPeople === 0) return [];
+  const count = Number(setupSheet.getRange('B3').getValue()) || 0;
+  if (!count) return [];
 
-  // Read roster rows and filter out unpopulated records
-  const rawData = setupSheet.getRange(9, 1, numPeople, 3).getValues();
-  const roster = [];
-  rawData.forEach(row => {
-    const name = String(row[1]).trim();
-    if (name) roster.push({ id: row[0], name: name, email: String(row[2]).trim() });
-  });
-  return roster;
+  return setupSheet.getRange(9, 1, count, 3).getValues()
+    .map((row, index) => ({
+      id: Number(row[0]) || index + 1,
+      name: String(row[1]).trim(),
+      email: String(row[2]).trim()
+    }))
+    .filter(person => person.name);
 }
 
-/**
- * Parses "Split Among": blank or "All" = everyone, else comma-separated names.
- * @param {string} splitStr - Raw string value from the "Split Among" cell.
- * @param {Array<string>} names - Array of active participant names.
- * @returns {Array<string>} Array of names included in the given expense split.
- */
-function parseIncluded(splitStr, names) {
-  const s = String(splitStr).trim();
-  if (!s || s.toLowerCase() === "all") return [...names];
-  const splitList = s.split(",").map(x => x.trim().toLowerCase());
-  return names.filter(n => splitList.includes(n.toLowerCase()));
+function adjustRosterRows() {
+  const setupSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP);
+  const target = Number(setupSheet.getRange('B3').getValue());
+  if (!Number.isInteger(target) || target < 2 || target > 15) return;
+
+  const current = Math.max(0, setupSheet.getLastRow() - 8);
+  if (target > current) {
+    const addRows = Array.from({ length: target - current }, (_, index) => [current + index + 1, '', '']);
+    setupSheet.getRange(9 + current, 1, addRows.length, 3).setValues(addRows);
+  } else if (target < current) {
+    setupSheet.deleteRows(9 + target, current - target);
+  }
 }
 
-/**
- * Simple trigger: reacts to edits on Setup and Expenses.
- * @param {Object} e - Event object containing contextual edit information.
- */
 function onEdit(e) {
   if (!e || !e.range) return;
 
-  // Extract contextual edit properties
-  const sheet = e.range.getSheet();
-  const sheetName = sheet.getName();
-  const row = e.range.getRow();
-  const col = e.range.getColumn();
-  const a1 = e.range.getA1Notation();
+  const range = e.range;
+  const sheetName = range.getSheet().getName();
+  const row = range.getRow();
+  const col = range.getColumn();
+  const a1 = range.getA1Notation();
 
   if (sheetName === SHEET_SETUP) {
-    // The master checkbox is the only Setup edit that needs an immediate
-    // calculation; this works on both mobile and desktop.
     if (a1 === CONFIRM_CELL) {
-      recalculateAll();
+      recalculateAll(true);
       return;
     }
 
-    // Rebuild headers / validations only when trip configuration or roster
-    // content changes — never for arbitrary Setup formatting edits.
-    const setupConfigChanged = a1 === "B2" || a1 === "B3" || a1 === "B4";
+    const configChanged = a1 === 'B2' || a1 === 'B3' || a1 === 'B4';
     const rosterChanged = row >= 9 && col >= 1 && col <= 3;
+    if (a1 === 'B3') adjustRosterRows();
 
-    if (a1 === "B3") adjustRosterRows();
-
-    if (setupConfigChanged || rosterChanged) {
+    if (configChanged || rosterChanged) {
       validateSetupStatus();
       updateExpensesStructure();
-      recalculateAll();
+      recalculateAll(true);
     }
     return;
   }
 
-  // Recalculate only for editable expense input fields A:E. Ignore clicks,
-  // calculated person columns, formatting changes and report-sheet changes.
   if (sheetName === SHEET_EXPENSES && row >= 2 && row <= MAX_DATA_ROWS + 1 && col >= COL.DATE && col <= COL.SPLIT) {
-    recalculateAll();
+    recalculateAll(false);
   }
 }
 
 /**
- * Adjusts Roster rows in Setup to match N (cell B3).
- * New rows start with a BLANK name (no expense column until named).
- */
-function adjustRosterRows() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const setupSheet = ss.getSheetByName(SHEET_SETUP);
-  const targetN = parseInt(setupSheet.getRange("B3").getValue(), 10);
-  if (!targetN) return;
-
-  // Calculate current number of roster entries on Setup tab
-  const currentRosterCount = Math.max(0, setupSheet.getLastRow() - 8);
-
-  if (targetN > currentRosterCount) {
-    // Append rows if target exceeds current roster size
-    const rowsToAdd = targetN - currentRosterCount;
-    const newRows = [];
-    for (let i = 1; i <= rowsToAdd; i++) {
-      newRows.push([currentRosterCount + i, "", ""]);
-    }
-    setupSheet.getRange(9 + currentRosterCount, 1, rowsToAdd, 3).setValues(newRows);
-  } else if (targetN < currentRosterCount) {
-    // Remove trailing roster rows if target is less than current roster size
-    setupSheet.deleteRows(9 + targetN, currentRosterCount - targetN);
-  }
-
-  applyRobotoFont(setupSheet);
-  setupSheet.autoResizeColumns(1, 3);
-}
-
-/**
- * ONE-TIME CLEANER: wipes ALL content, formatting and validations
- * below the Expenses header row, then rebuilds.
- * (Keeps the header row; re-enter your rows afterwards.)
- */
-function fixExpensesSheet() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const expenseSheet = ss.getSheetByName(SHEET_EXPENSES);
-  if (!expenseSheet) return;
-
-  clearAllProtections(expenseSheet);
-
-  // Wipe body content, validation rules, and custom formats below header
-  if (expenseSheet.getMaxRows() > 1) {
-    expenseSheet
-      .getRange(2, 1, expenseSheet.getMaxRows() - 1, expenseSheet.getMaxColumns())
-      .clearContent().clearFormat().clearDataValidations();
-  }
-
-  // Restore validation settings, column structure, and trigger recalculation
-  updateExpensesStructure();
-  recalculateAll();
-  safeAlert("Expenses sheet cleaned. Re-enter your expense rows.");
-}
-
-/**
- * Removes every range protection on a sheet (best effort).
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet - Sheet from which to clear range protections.
- */
-function clearAllProtections(sheet) {
-  sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE).forEach(p => {
-    try { p.remove(); } catch (e) { /* not ours — ignore */ }
-  });
-}
-
-/**
- * Rebuilds headers, validations and formats on Expenses.
- * Removes leftover person columns when the roster shrinks (5 -> 3 etc),
- * and normalizes person columns (clears stale checkbox validation and
- * any colored fills left by older versions).
+ * Non-destructive structure maintenance. Never clears expense input columns A:E.
  */
 function updateExpensesStructure() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const expenseSheet = ss.getSheetByName(SHEET_EXPENSES);
-  if (!expenseSheet) return;
-
-  // Prepare header names and dynamic layout properties
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
   const roster = getRoster();
-  const names = roster.map(r => r.name);
-  const headers = ["Date", "Description", "Amount", "Paid By", "Split Among", ...names];
-  const newWidth = headers.length;
-  const currencySymbol = ss.getSheetByName(SHEET_SETUP).getRange("B4").getValue() || "₹";
-  const currencyFormat = `"${currencySymbol}"#,##0.00`;
+  if (!sheet || !roster.length) return;
 
-  // This function runs only when setup/roster changes, not after normal
-  // expense typing. Keep structural work here rather than in onEdit's hot path.
-  clearAllProtections(expenseSheet);
+  const names = roster.map(person => person.name);
+  const headerWidth = COL.SPLIT + names.length;
+  const summaryCol = getSummaryCol_(names.length);
+  const format = getCurrencyFormat_();
 
-  // Remove excess, obsolete person columns if roster was downsized
-  const oldWidth = expenseSheet.getLastColumn();
-  if (oldWidth > newWidth) {
-    expenseSheet.getRange(1, newWidth + 1, expenseSheet.getMaxRows(), oldWidth - newWidth)
-      .clearContent()
-      .clearFormat()
-      .clearDataValidations();
+  const requiredColumns = summaryCol + SUMMARY_WIDTH - 1;
+  if (sheet.getMaxColumns() < requiredColumns) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), requiredColumns - sheet.getMaxColumns());
   }
 
-  // Format header row
-  expenseSheet.getRange(1, 1, 1, newWidth).setValues([headers])
-    .setBackground(COLOR.HEADER)
-    .setFontColor("#FFFFFF")
-    .setFontWeight("bold");
-  expenseSheet.setFrozenRows(1);
+  sheet.getRange(1, 1, 1, headerWidth).setValues([[
+    'Date', 'Description', 'Amount', 'Paid By', 'Split Among', ...names
+  ]]).setBackground(COLOR.HEADER).setFontColor('#FFFFFF').setFontWeight('bold');
+  sheet.setFrozenRows(1);
 
-  // Configure date format and validation rule in Column A
   const dateRule = SpreadsheetApp.newDataValidation()
     .requireDate()
     .setAllowInvalid(false)
-    .setHelpText("Enter a valid date, e.g. 09-Jan-2026.")
+    .setHelpText('Enter a valid date, e.g. 09-Jan-2026.')
     .build();
-  expenseSheet.getRange(2, COL.DATE, MAX_DATA_ROWS, 1)
-    .setDataValidation(dateRule)
-    .setNumberFormat("dd-mmm-yyyy");
+  sheet.getRange(2, COL.DATE, MAX_DATA_ROWS, 1).setDataValidation(dateRule).setNumberFormat('dd-mmm-yyyy');
 
-  // Apply dropdown validation to "Paid By" and format dynamic share columns
-  if (names.length) {
-    const paidByRule = SpreadsheetApp.newDataValidation()
-      .requireValueInList(names, true)
-      .setAllowInvalid(false)
-      .build();
+  const paidByRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(names, true)
+    .setAllowInvalid(false)
+    .build();
+  sheet.getRange(2, COL.PAID_BY, MAX_DATA_ROWS, 1).setDataValidation(paidByRule);
+  sheet.getRange(2, COL.AMOUNT, MAX_DATA_ROWS, 1).setNumberFormat(format);
+  sheet.getRange(2, FIRST_PERSON_COL, MAX_DATA_ROWS, names.length)
+    .clearDataValidations().setNumberFormat(format).setBackground('#FFFFFF').setFontColor('#000000');
 
-    expenseSheet.getRange(2, COL.PAID_BY, MAX_DATA_ROWS, 1).setDataValidation(paidByRule);
-    expenseSheet.getRange(2, FIRST_PERSON_COL, MAX_DATA_ROWS, names.length)
-      .clearDataValidations()
-      .setBackground("#FFFFFF")
-      .setFontColor("#000000")
-      .setFontWeight("normal")
-      .setNumberFormat(currencyFormat);
-  } else {
-    expenseSheet.getRange(2, COL.PAID_BY, MAX_DATA_ROWS, 1).clearDataValidations();
-  }
+  sheet.setColumnWidth(summaryCol, 130);
+  sheet.setColumnWidth(summaryCol + 1, 100);
+  sheet.setColumnWidth(summaryCol + 2, 120);
+  sheet.setColumnWidth(summaryCol + 3, 145);
+}
 
-  // Set number format for primary expense amount column
-  expenseSheet.getRange(2, COL.AMOUNT, MAX_DATA_ROWS, 1).setNumberFormat(currencyFormat);
+function toMinor_(value) {
+  const amount = Number(value);
+  return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) : 0;
+}
+
+function fromMinor_(minor) {
+  return minor / 100;
+}
+
+function allocateEqualMinor_(amountMinor, people) {
+  const sorted = [...people].sort((a, b) => a.id - b.id);
+  const allocations = new Map();
+  if (!amountMinor || !sorted.length) return allocations;
+
+  const base = Math.floor(amountMinor / sorted.length);
+  const remainder = amountMinor % sorted.length;
+  sorted.forEach((person, index) => {
+    allocations.set(person.id, base + (index < remainder ? 1 : 0));
+  });
+  return allocations;
+}
+
+function parseIncluded_(splitValue, roster) {
+  const value = String(splitValue || '').trim();
+  if (!value || value.toLocaleLowerCase() === 'all') return [...roster];
+
+  const byName = new Map(roster.map(person => [person.name.toLocaleLowerCase(), person]));
+  const seen = new Set();
+  const people = [];
+
+  value.split(',').map(v => v.trim()).filter(Boolean).forEach(name => {
+    const person = byName.get(name.toLocaleLowerCase());
+    if (person && !seen.has(person.id)) {
+      seen.add(person.id);
+      people.push(person);
+    }
+  });
+  return people;
 }
 
 /**
- * True if the given row is the TOTAL summary row.
- * The label sits in column B because column A enforces date validation
- * (which rejects script writes too).
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet - Expenses worksheet instance.
- * @param {number} rowIndex - Row index to check.
- * @returns {boolean} True if designated row is a total row.
+ * Builds an immutable, exact ledger from Expenses A:E.
+ * Incomplete rows are ignored live. Invalid completed rows are reported only
+ * when Send Reports is confirmed, instead of producing broken settlements.
  */
-function isTotalRow_(sheet, rowIndex) {
-  const a = String(sheet.getRange(rowIndex, COL.DATE).getValue()).toUpperCase();
-  const b = String(sheet.getRange(rowIndex, COL.DESC).getValue()).toUpperCase();
-  return a.indexOf(TOTAL_LABEL) === 0 || b.indexOf(TOTAL_LABEL) === 0;
-}
-
-/**
- * Number of real data rows (excludes header and any TOTAL row).
- * @param {GoogleAppsScript.Spreadsheet.Sheet} sheet - Expenses worksheet instance.
- * @returns {number} Net count of actual expense records.
- */
-function countDataRows_(sheet) {
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) return 0;
-  return isTotalRow_(sheet, lastRow) ? lastRow - 2 : lastRow - 1;
-}
-
-/**
- * Returns last data row, deleting any existing TOTAL row first.
- * @param {GoogleAppsScript.Spreadsheet.Sheet} expenseSheet - Expenses worksheet instance.
- * @returns {number} Row index of final data row after removing total summary line.
- */
-function stripTotalRow(expenseSheet) {
-  let lastRow = expenseSheet.getLastRow();
-  if (lastRow > 1 && isTotalRow_(expenseSheet, lastRow)) {
-    expenseSheet.deleteRow(lastRow);
-    lastRow--;
-  }
-  return lastRow;
-}
-
-/**
- * Core recalculation. Person shares + TOTAL row appear ONLY when the
- * master "All Expenses Confirmed" checkbox (Setup!B6) is ticked.
- */
-function recalculateAll() {
+function buildLedger_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const expenseSheet = ss.getSheetByName(SHEET_EXPENSES);
-  const setupSheet = ss.getSheetByName(SHEET_SETUP);
+  const sheet = ss.getSheetByName(SHEET_EXPENSES);
   const roster = getRoster();
-  if (!expenseSheet || !setupSheet) return;
+  const peopleById = new Map(roster.map(person => [person.id, person]));
+  const peopleByName = new Map(roster.map(person => [person.name.toLocaleLowerCase(), person]));
+  const balances = new Map(roster.map(person => [person.id, 0]));
+  const paid = new Map(roster.map(person => [person.id, 0]));
+  const spent = new Map(roster.map(person => [person.id, 0]));
+  const rowRecords = new Map();
+  const errors = [];
+  const expenses = [];
+  let totalMinor = 0;
 
-  const names = roster.map(r => r.name);
-  if (names.length === 0) { updateSendReportsSheet(); return; }
+  if (!sheet || !roster.length) {
+    return { roster, peopleById, balances, paid, spent, rowRecords, errors, expenses, totalMinor };
+  }
 
-  // Retrieve formatting specifics
-  const currencySymbol = setupSheet.getRange("B4").getValue() || "₹";
-  const currencyFormat = `"${currencySymbol}"#,##0.00`;
-  const width = COL.SPLIT + names.length;
+  const lastRow = Math.min(sheet.getLastRow(), MAX_DATA_ROWS + 1);
+  if (lastRow < 2) {
+    return { roster, peopleById, balances, paid, spent, rowRecords, errors, expenses, totalMinor };
+  }
 
-  // Clear previous total row and evaluate confirmation status
-  const dataLastRow = stripTotalRow(expenseSheet);
-  const confirmed = isExpensesConfirmed();
-
-  if (dataLastRow >= 2 && confirmed) {
-    // Fetch expense data range matrix
-    const data = expenseSheet.getRange(2, 1, dataLastRow - 1, width).getValues();
-    const shareMatrix = [];
-    let totalAmount = 0;
-    const personTotals = new Array(names.length).fill(0);
-
-    // Compute balance splits and nets row-by-row
-    for (let i = 0; i < data.length; i++) {
-      const row = data[i];
-      const amount = parseFloat(row[COL.AMOUNT - 1]) || 0;
-      const paidBy = String(row[COL.PAID_BY - 1]).trim();
-      const rowNet = new Array(names.length).fill("");
-
-      if (amount > 0 && paidBy) {
-        const included = parseIncluded(row[COL.SPLIT - 1], names);
-        if (included.length > 0) {
-          // Equal split, 2-decimal precision, remainder to the payer
-          const baseShare = Math.floor((amount / included.length) * 100) / 100;
-          const remainder = Math.round((amount - baseShare * included.length) * 100) / 100;
-
-          names.forEach((name, idx) => {
-            const consumed = included.includes(name)
-              ? baseShare + (name === paidBy ? remainder : 0) : 0;
-            const paid = (name === paidBy) ? amount : 0;
-            rowNet[idx] = Math.round((paid - consumed) * 100) / 100;
-            personTotals[idx] = Math.round((personTotals[idx] + rowNet[idx]) * 100) / 100;
-          });
-          totalAmount = Math.round((totalAmount + amount) * 100) / 100;
-        }
-      }
-      shareMatrix.push(rowNet);
+  const data = sheet.getRange(2, 1, lastRow - 1, COL.SPLIT).getValues();
+  data.forEach((row, index) => {
+    const rowNumber = index + 2;
+    const nonEmpty = row.some(value => String(value == null ? '' : value).trim() !== '');
+    if (!nonEmpty) {
+      rowRecords.set(rowNumber, null);
+      return;
     }
 
-    // Output individual share matrix to spreadsheet grid
-    const shareRange = expenseSheet.getRange(2, FIRST_PERSON_COL, shareMatrix.length, names.length);
-    shareRange.setValues(shareMatrix).setNumberFormat(currencyFormat);
+    const amountMinor = toMinor_(row[COL.AMOUNT - 1]);
+    const payerText = String(row[COL.PAID_BY - 1] || '').trim();
 
-    // TOTAL row — label in Description (B); Date col (A) stays empty
-    // because its date validation rejects non-date writes, even from scripts.
-    const totalsRowIndex = dataLastRow + 1;
-    const totalsRow = ["", TOTAL_LABEL, totalAmount, "", ""].concat(personTotals);
-    expenseSheet.getRange(totalsRowIndex, 1, 1, width).setValues([totalsRow])
-      .setBackground(COLOR.TOTAL_BG).setFontWeight("bold");
-    expenseSheet.getRange(totalsRowIndex, COL.AMOUNT).setNumberFormat(currencyFormat);
-    expenseSheet.getRange(totalsRowIndex, FIRST_PERSON_COL, 1, names.length).setNumberFormat(currencyFormat);
+    // Keep partly entered rows blank in live calculated columns; do not treat
+    // them as financial records or errors until they contain Amount + Paid By.
+    if (!amountMinor || !payerText) {
+      rowRecords.set(rowNumber, null);
+      return;
+    }
 
-  } else if (dataLastRow >= 2 && !confirmed) {
-    // Not confirmed: keep rows, but hide all computed values
-    expenseSheet.getRange(2, FIRST_PERSON_COL, dataLastRow - 1, names.length).clearContent();
-  }
+    const payer = peopleByName.get(payerText.toLocaleLowerCase());
+    if (!payer) {
+      errors.push(`Row ${rowNumber}: Paid By '${payerText}' is not a roster member.`);
+      rowRecords.set(rowNumber, null);
+      return;
+    }
 
-  // Avoid rebuilding the reports sheet after every unconfirmed expense edit.
-  if (confirmed || dataLastRow === 1) updateSendReportsSheet();
-}
+    const included = parseIncluded_(row[COL.SPLIT - 1], roster);
+    if (!included.length) {
+      errors.push(`Row ${rowNumber}: Split Among has no valid roster member.`);
+      rowRecords.set(rowNumber, null);
+      return;
+    }
 
-/**
- * CONFIRM HELPERS — one switch for everything.
- * confirmAllExpenses is assignable to an Insert -> Drawing button.
- */
-function confirmAllExpenses() {
-  SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP)
-    .getRange(CONFIRM_CELL).setValue(true);
-  recalculateAll();
-}
+    const allocations = allocateEqualMinor_(amountMinor, included);
+    let allocationSum = 0;
+    allocations.forEach(value => allocationSum += value);
+    if (allocationSum !== amountMinor) {
+      errors.push(`Row ${rowNumber}: allocation does not equal the expense amount.`);
+      rowRecords.set(rowNumber, null);
+      return;
+    }
 
-/**
- * Toggles master confirmation state to false, unconfirming expenses.
- */
-function unconfirmExpenses() {
-  SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP)
-    .getRange(CONFIRM_CELL).setValue(false);
-  recalculateAll();
-}
-
-/**
- * Expense rows as objects. Returns ZERO rows while unconfirmed,
- * so totals/reports stay hidden until the master switch is ticked.
- * @returns {Object} Object containing parsed expense records, roster objects, and name array.
- */
-function getConfirmedExpenses() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const expenseSheet = ss.getSheetByName(SHEET_EXPENSES);
-  const roster = getRoster();
-  const names = roster.map(r => r.name);
-  if (!expenseSheet || names.length === 0) return { expenses: [], roster, names };
-  if (!isExpensesConfirmed()) return { expenses: [], roster, names };
-
-  const dataLastRow = stripTotalRow(expenseSheet);
-  if (dataLastRow < 2) return { expenses: [], roster, names };
-
-  // Read non-total data grid rows
-  const data = expenseSheet.getRange(2, 1, dataLastRow - 1, COL.SPLIT + names.length).getValues();
-  const tz = ss.getSpreadsheetTimeZone();
-  const expenses = [];
-
-  // Parse raw sheet rows into structured JavaScript objects
-  data.forEach(row => {
-    const amount = parseFloat(row[COL.AMOUNT - 1]) || 0;
-    const paidBy = String(row[COL.PAID_BY - 1]).trim();
-    if (amount <= 0 || !paidBy) return;
-
-    const dateVal = row[COL.DATE - 1] instanceof Date
-      ? Utilities.formatDate(row[COL.DATE - 1], tz, "dd-MMM-yyyy")
-      : String(row[COL.DATE - 1]);
-
-    expenses.push({
-      date: dateVal,
-      desc: String(row[COL.DESC - 1]),
-      amount: amount,
-      paidBy: paidBy,
-      included: parseIncluded(row[COL.SPLIT - 1], names)
+    balances.set(payer.id, balances.get(payer.id) + amountMinor);
+    paid.set(payer.id, paid.get(payer.id) + amountMinor);
+    allocations.forEach((shareMinor, personId) => {
+      balances.set(personId, balances.get(personId) - shareMinor);
+      spent.set(personId, spent.get(personId) + shareMinor);
     });
+
+    const date = row[COL.DATE - 1] instanceof Date
+      ? Utilities.formatDate(row[COL.DATE - 1], ss.getSpreadsheetTimeZone(), 'dd-MMM-yyyy')
+      : String(row[COL.DATE - 1] || '');
+
+    const record = {
+      row: rowNumber,
+      amountMinor,
+      paidById: payer.id,
+      includedIds: included.map(person => person.id),
+      allocations,
+      date,
+      description: String(row[COL.DESC - 1] || '')
+    };
+    rowRecords.set(rowNumber, record);
+    expenses.push(record);
+    totalMinor += amountMinor;
   });
 
-  return { expenses, roster, names };
+  let ledgerSum = 0;
+  balances.forEach(value => ledgerSum += value);
+  if (ledgerSum !== 0) errors.push(`Ledger integrity error: balances sum to ${ledgerSum} paise, not zero.`);
+
+  return { roster, peopleById, balances, paid, spent, rowRecords, errors, expenses, totalMinor };
 }
 
 /**
- * Per-person totals across expenses.
- * @param {Array<Object>} expenses - Formatted expense data objects.
- * @param {Array<string>} names - Array of active participant names.
- * @returns {Object} Map of member names to their paid, share, and net total values.
+ * Live calculations on Expenses. Reports are updated only when confirmation is
+ * active or this was called directly through a menu/confirmation action.
  */
-function computeTotals(expenses, names) {
-  const totals = {};
-  names.forEach(n => totals[n] = { paid: 0, share: 0 });
+function recalculateAll(forceReports) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
+  if (!sheet) return;
 
-  // Sum total payments and fair splits for each person
-  expenses.forEach(e => {
-    if (e.included.length === 0) return;
-    const baseShare = Math.floor((e.amount / e.included.length) * 100) / 100;
-    const remainder = Math.round((e.amount - baseShare * e.included.length) * 100) / 100;
+  const ledger = buildLedger_();
+  const roster = ledger.roster;
+  if (!roster.length) return;
 
-    names.forEach(name => {
-      const isPayer = e.paidBy === name;
-      const isIncluded = e.included.includes(name);
-      if (isPayer) totals[name].paid += e.amount;
-      if (isIncluded) totals[name].share += baseShare + (isPayer ? remainder : 0);
-    });
-  });
+  const lastRow = Math.min(sheet.getLastRow(), MAX_DATA_ROWS + 1);
+  const format = getCurrencyFormat_();
 
-  // Calculate net balance and apply two-decimal rounding
-  names.forEach(n => {
-    totals[n].paid = Math.round(totals[n].paid * 100) / 100;
-    totals[n].share = Math.round(totals[n].share * 100) / 100;
-    totals[n].net = Math.round((totals[n].paid - totals[n].share) * 100) / 100;
-  });
-  return totals;
-}
-
-/**
- * Populates Summary & Simplified Settlements on "Send Reports".
- */
-function updateSendReportsSheet() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const reportsSheet = ss.getSheetByName(SHEET_REPORTS) || ss.insertSheet(SHEET_REPORTS);
-  const setupSheet = ss.getSheetByName(SHEET_SETUP);
-  const currencySymbol = setupSheet ? (setupSheet.getRange("B4").getValue() || "₹") : "₹";
-  const currencyFormat = `"${currencySymbol}"#,##0.00`;
-  const { expenses, roster, names } = getConfirmedExpenses();
-
-  // Avoid clear() over the entire sheet and avoid autoresizeColumns() on every
-  // edit. Only clear the small report area actually managed by this script.
-  const requiredRows = Math.max(20, roster.length + 20);
-  if (reportsSheet.getMaxRows() < requiredRows) {
-    reportsSheet.insertRowsAfter(reportsSheet.getMaxRows(), requiredRows - reportsSheet.getMaxRows());
-  }
-  if (reportsSheet.getMaxColumns() < 6) {
-    reportsSheet.insertColumnsAfter(reportsSheet.getMaxColumns(), 6 - reportsSheet.getMaxColumns());
+  if (lastRow >= 2) {
+    const matrix = [];
+    for (let row = 2; row <= lastRow; row++) {
+      const record = ledger.rowRecords.get(row);
+      if (!record) {
+        matrix.push(new Array(roster.length).fill(''));
+        continue;
+      }
+      matrix.push(roster.map(person => {
+        const paidMinor = record.paidById === person.id ? record.amountMinor : 0;
+        const shareMinor = record.allocations.get(person.id) || 0;
+        return fromMinor_(paidMinor - shareMinor);
+      }));
+    }
+    sheet.getRange(2, FIRST_PERSON_COL, matrix.length, roster.length)
+      .setValues(matrix).setNumberFormat(format);
   }
 
-  const managedRange = reportsSheet.getRange(1, 1, requiredRows, 6);
-  managedRange.clearContent();
+  writeLiveSummary_(sheet, getSummaryCol_(roster.length), ledger, format);
 
-  // Render warning message if expenses remain unconfirmed
-  if (!isExpensesConfirmed()) {
-    reportsSheet.getRange("A1:F1").merge()
-      .setValue("⚠️ Expenses not confirmed yet — tick 'All Expenses Confirmed' on the Setup sheet to see totals and send reports.")
-      .setBackground(COLOR.PENDING)
-      .setFontColor(COLOR.WARN_TX)
-      .setFontWeight("bold");
-    return;
-  }
-
-  // Build Personal Balances Summary table section
-  const totals = computeTotals(expenses, names);
-  reportsSheet.getRange("A1:F1").merge()
-    .setValue("PERSONAL BALANCES SUMMARY")
-    .setBackground(COLOR.HEADER_DARK)
-    .setFontColor("#FFFFFF")
-    .setFontWeight("bold");
-
-  reportsSheet.getRange("A2:F2")
-    .setValues([["Name", "Email", "Total Paid", "Total Share", "Net Balance", "Report Status"]])
-    .setBackground(COLOR.HEADER_MID)
-    .setFontColor("#FFFFFF")
-    .setFontWeight("bold");
-
-  // Populate dynamic rows for summary table
-  const summaryData = roster.map(person => {
-    const t = totals[person.name] || { paid: 0, share: 0, net: 0 };
-    return [
-      person.name,
-      person.email || "—",
-      t.paid,
-      t.share,
-      t.net,
-      person.email ? "Not Sent" : "No email — will be skipped"
-    ];
-  });
-
-  if (summaryData.length) {
-    reportsSheet.getRange(3, 1, summaryData.length, 6).setValues(summaryData);
-    reportsSheet.getRange(3, 3, summaryData.length, 3).setNumberFormat(currencyFormat);
-  }
-
-  // Calculate debt settlement instructions using optimal greedy strategy
-  const balancesMap = {};
-  names.forEach(name => balancesMap[name] = totals[name].net);
-  const settlements = calculateGreedySettlements(balancesMap);
-  const startRow = summaryData.length + 5;
-
-  // Build Simplified Settlement Plan section headers
-  reportsSheet.getRange(startRow, 1, 1, 4).merge()
-    .setValue("SIMPLIFIED SETTLEMENT PLAN")
-    .setBackground(COLOR.HEADER)
-    .setFontColor("#FFFFFF")
-    .setFontWeight("bold");
-
-  reportsSheet.getRange(startRow + 1, 1, 1, 4)
-    .setValues([["From (Debtor)", "To (Creditor)", "Amount", "Instruction"]])
-    .setBackground("#115E59")
-    .setFontColor("#FFFFFF")
-    .setFontWeight("bold");
-
-  // Write calculated payment steps
-  if (settlements.length) {
-    const settlementRows = settlements.map(s => [
-      s.from,
-      s.to,
-      s.amount,
-      `${s.from} pays ${s.to} ${currencySymbol}${s.amount.toFixed(2)}`
-    ]);
-    reportsSheet.getRange(startRow + 2, 1, settlementRows.length, 4).setValues(settlementRows);
-    reportsSheet.getRange(startRow + 2, 3, settlementRows.length, 1).setNumberFormat(currencyFormat);
-  } else {
-    reportsSheet.getRange(startRow + 2, 1, 1, 4).merge()
-      .setValue("All debts settled!")
-      .setFontStyle("italic");
+  if (isExpensesConfirmed() || forceReports === true) {
+    updateSendReportsSheet();
   }
 }
 
+function writeLiveSummary_(sheet, col, ledger, format) {
+  const roster = ledger.roster;
+  const height = roster.length + 5;
+
+  // Only clear/rewrite generated summary cells. Expense entries A:E remain safe.
+  const summaryRange = sheet.getRange(1, col, height + 3, SUMMARY_WIDTH);
+  summaryRange.breakApart();
+  summaryRange.clearContent();
+
+  sheet.getRange(1, col, 1, SUMMARY_WIDTH).merge().setValue('LIVE SUMMARY')
+    .setBackground(COLOR.HEADER_DARK).setFontColor('#FFFFFF').setFontWeight('bold');
+
+  sheet.getRange(2, col, 1, 3).merge().setValue('Total Spent (Everyone)')
+    .setBackground(COLOR.TOTAL_BG).setFontWeight('bold');
+  sheet.getRange(2, col + 3).setValue(fromMinor_(ledger.totalMinor))
+    .setBackground(COLOR.TOTAL_BG).setFontWeight('bold').setNumberFormat(format);
+
+  sheet.getRange(3, col, 1, SUMMARY_WIDTH)
+    .setValues([['Person', 'Paid', 'Spent (Share)', 'Net (+ collect / − owe)']])
+    .setBackground(COLOR.HEADER_MID).setFontColor('#FFFFFF').setFontWeight('bold');
+
+  const rows = roster.map(person => [
+    person.name,
+    fromMinor_(ledger.paid.get(person.id) || 0),
+    fromMinor_(ledger.spent.get(person.id) || 0),
+    fromMinor_(ledger.balances.get(person.id) || 0)
+  ]);
+  sheet.getRange(4, col, roster.length, SUMMARY_WIDTH).setValues(rows);
+  sheet.getRange(4, col + 1, roster.length, 3).setNumberFormat(format);
+  sheet.getRange(4, col + 1, roster.length, 2).setBackground(COLOR.BLUE_BG).setFontColor(COLOR.BLUE_TX);
+
+  const netBg = [];
+  const netFg = [];
+  roster.forEach(person => {
+    const net = ledger.balances.get(person.id) || 0;
+    if (net > 0) {
+      netBg.push([COLOR.GREEN_BG]); netFg.push([COLOR.GREEN_TX]);
+    } else if (net < 0) {
+      netBg.push([COLOR.RED_BG]); netFg.push([COLOR.RED_TX]);
+    } else {
+      netBg.push([COLOR.GRAY_BG]); netFg.push([COLOR.GRAY_TX]);
+    }
+  });
+  sheet.getRange(4, col + 3, roster.length, 1).setBackgrounds(netBg).setFontColors(netFg);
+
+  sheet.getRange(roster.length + 4, col, 1, SUMMARY_WIDTH).merge()
+    .setValue('Spent = a person’s technical share, even if another person paid the bill.')
+    .setFontStyle('italic').setFontColor('#64748B').setFontSize(9);
+}
+
 /**
- * Greedy algorithm to minimize total settlement transactions.
- * @param {Object} balances - Map of member names to their current net balances.
- * @returns {Array<Object>} List of settlement transaction objects with from, to, and amount properties.
+ * Robust exact greedy settlement. All values are integer paise.
+ * Returns only fully valid settlement records.
  */
-function calculateGreedySettlements(balances) {
+function calculateGreedySettlements_(ledger) {
+  if (ledger.errors.length) {
+    throw new Error(ledger.errors.join(' | '));
+  }
+
+  let total = 0;
+  ledger.balances.forEach(value => total += value);
+  if (total !== 0) {
+    throw new Error(`Ledger is not balanced: ${total} paise remaining.`);
+  }
+
   const debtors = [];
   const creditors = [];
+  ledger.roster.forEach(person => {
+    const net = ledger.balances.get(person.id) || 0;
+    if (net < 0) debtors.push({ id: person.id, name: person.name, remaining: -net });
+    if (net > 0) creditors.push({ id: person.id, name: person.name, remaining: net });
+  });
 
-  // Separate participants into debtors and creditors
-  for (const person in balances) {
-    const bal = Math.round(balances[person] * 100) / 100;
-    if (bal < -0.01) debtors.push({ name: person, amount: Math.abs(bal) });
-    else if (bal > 0.01) creditors.push({ name: person, amount: bal });
-  }
-
-  // Sort descending to match largest balances first
-  debtors.sort((a, b) => b.amount - a.amount);
-  creditors.sort((a, b) => b.amount - a.amount);
+  debtors.sort((a, b) => b.remaining - a.remaining || a.id - b.id);
+  creditors.sort((a, b) => b.remaining - a.remaining || a.id - b.id);
 
   const settlements = [];
-  let d = 0, c = 0;
+  let debtorIndex = 0;
+  let creditorIndex = 0;
 
-  // Match debt values to settle balances in minimum transactions
-  while (d < debtors.length && c < creditors.length) {
-    const debtor = debtors[d];
-    const creditor = creditors[c];
-    const amount = Math.min(debtor.amount, creditor.amount);
+  while (debtorIndex < debtors.length && creditorIndex < creditors.length) {
+    const debtor = debtors[debtorIndex];
+    const creditor = creditors[creditorIndex];
+    const amountMinor = Math.min(debtor.remaining, creditor.remaining);
 
-    settlements.push({ from: debtor.name, to: creditor.name, amount: Math.round(amount * 100) / 100 });
+    if (!Number.isInteger(amountMinor) || amountMinor <= 0) {
+      throw new Error('Invalid non-positive settlement amount encountered.');
+    }
+    if (!debtor.name || !creditor.name || debtor.id === creditor.id) {
+      throw new Error('Invalid settlement participant encountered.');
+    }
 
-    debtor.amount = Math.round((debtor.amount - amount) * 100) / 100;
-    creditor.amount = Math.round((creditor.amount - amount) * 100) / 100;
+    settlements.push({
+      fromId: debtor.id,
+      from: debtor.name,
+      toId: creditor.id,
+      to: creditor.name,
+      amountMinor
+    });
 
-    if (debtor.amount === 0) d++;
-    if (creditor.amount === 0) c++;
+    debtor.remaining -= amountMinor;
+    creditor.remaining -= amountMinor;
+
+    if (debtor.remaining === 0) debtorIndex++;
+    if (creditor.remaining === 0) creditorIndex++;
   }
+
+  if (debtorIndex !== debtors.length || creditorIndex !== creditors.length) {
+    throw new Error('Settlement did not clear every balance.');
+  }
+
+  // Final proof: apply settlement suggestions to a copy and require exact zero.
+  const verification = new Map(ledger.balances);
+  settlements.forEach(settlement => {
+    verification.set(settlement.fromId, verification.get(settlement.fromId) + settlement.amountMinor);
+    verification.set(settlement.toId, verification.get(settlement.toId) - settlement.amountMinor);
+  });
+  verification.forEach((value, participantId) => {
+    if (value !== 0) throw new Error(`Settlement verification failed for person ID ${participantId}.`);
+  });
+
   return settlements;
 }
 
-/**
- * Sends a plain test email to the account running the script.
- * Use this FIRST to verify the "Send email as you" permission is granted.
- */
-function testEmailPermission() {
-  let addr = Session.getActiveUser().getEmail();
+function confirmAllExpenses() {
+  const setupSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP);
+  setupSheet.getRange(CONFIRM_CELL).setValue(true);
+  recalculateAll(true);
+}
 
-  // Prompt user for email address if active user cannot be detected automatically
-  if (!addr) {
-    try {
-      const ui = SpreadsheetApp.getUi();
-      const resp = ui.prompt("Test Email", "Enter your email address:", ui.ButtonSet.OK_CANCEL);
-      if (resp.getSelectedButton() !== ui.Button.OK) return;
-      addr = resp.getResponseText().trim();
-    } catch (e) {
-      safeAlert("Could not detect your email automatically. Open the spreadsheet on a computer and use the menu: Expense Splitter → Test Email Permission.");
-      return;
-    }
-  }
-
-  // Attempt test email transmission
-  try {
-    MailApp.sendEmail(addr, "Expense Splitter — Test",
-      "If you can read this, the script has permission to send email as you.");
-    safeAlert(`✅ Test email sent to ${addr}.\n\nSender = the Google account you are logged in with.\nCheck inbox AND spam.`);
-  } catch (err) {
-    safeAlert(`❌ Test FAILED:\n\n${err.message}\n\nFix: run any function from the Apps Script editor and approve the "Send email as you" permission.`);
-  }
+function unconfirmExpenses() {
+  const setupSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP);
+  setupSheet.getRange(CONFIRM_CELL).setValue(false);
+  recalculateAll(true);
 }
 
 /**
- * Generates a personalized PDF per person and emails it.
- * Sender = the Google account running this function.
- * People without a valid email are skipped (logged in Sheet 3).
+ * Clears/rebuilds only generated reports, never the Expense sheet.
+ * breakApart() is required so old merged report cells cannot leave a stale
+ * debtor name behind when the next settlement table has different rows.
  */
+function updateSendReportsSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_REPORTS) || ss.insertSheet(SHEET_REPORTS);
+  const ledger = buildLedger_();
+  const roster = ledger.roster;
+  const format = getCurrencyFormat_();
+  const requiredRows = Math.max(25, roster.length + 25);
+
+  if (sheet.getMaxRows() < requiredRows) {
+    sheet.insertRowsAfter(sheet.getMaxRows(), requiredRows - sheet.getMaxRows());
+  }
+  if (sheet.getMaxColumns() < 6) {
+    sheet.insertColumnsAfter(sheet.getMaxColumns(), 6 - sheet.getMaxColumns());
+  }
+
+  // This is safe: it only clears generated report output, not expense entries.
+  const output = sheet.getRange(1, 1, requiredRows, 6);
+  output.breakApart();
+  output.clearContent();
+  output.clearFormat();
+  output.clearDataValidations();
+
+  if (!isExpensesConfirmed()) {
+    sheet.getRange('A1:F1').merge().setValue(
+      '⚠️ Expenses are not confirmed. Tick Setup!B6 to publish balances, settlements, and email reports.'
+    ).setBackground(COLOR.WARN_BG).setFontColor(COLOR.WARN_TX).setFontWeight('bold');
+    return;
+  }
+
+  if (ledger.errors.length) {
+    sheet.getRange('A1:F1').merge().setValue(`❌ Cannot create settlement plan: ${ledger.errors.join(' | ')}`)
+      .setBackground(COLOR.RED_BG).setFontColor(COLOR.RED_TX).setFontWeight('bold');
+    return;
+  }
+
+  sheet.getRange('A1:F1').merge().setValue('PERSONAL BALANCES SUMMARY')
+    .setBackground(COLOR.HEADER_DARK).setFontColor('#FFFFFF').setFontWeight('bold');
+  sheet.getRange('A2:F2').setValues([['Name', 'Email', 'Total Paid', 'Total Share', 'Net Balance', 'Report Status']])
+    .setBackground(COLOR.HEADER_MID).setFontColor('#FFFFFF').setFontWeight('bold');
+
+  const summaryRows = roster.map(person => [
+    person.name,
+    person.email || '—',
+    fromMinor_(ledger.paid.get(person.id) || 0),
+    fromMinor_(ledger.spent.get(person.id) || 0),
+    fromMinor_(ledger.balances.get(person.id) || 0),
+    person.email ? 'Not Sent' : 'No email — will be skipped'
+  ]);
+  sheet.getRange(3, 1, summaryRows.length, 6).setValues(summaryRows);
+  sheet.getRange(3, 3, summaryRows.length, 3).setNumberFormat(format);
+
+  const netBg = [];
+  const netFg = [];
+  roster.forEach(person => {
+    const net = ledger.balances.get(person.id) || 0;
+    if (net > 0) {
+      netBg.push([COLOR.GREEN_BG]); netFg.push([COLOR.GREEN_TX]);
+    } else if (net < 0) {
+      netBg.push([COLOR.RED_BG]); netFg.push([COLOR.RED_TX]);
+    } else {
+      netBg.push([COLOR.GRAY_BG]); netFg.push([COLOR.GRAY_TX]);
+    }
+  });
+  sheet.getRange(3, 5, roster.length, 1).setBackgrounds(netBg).setFontColors(netFg);
+
+  let settlements;
+  try {
+    settlements = calculateGreedySettlements_(ledger);
+  } catch (err) {
+    sheet.getRange(roster.length + 5, 1, 1, 6).merge().setValue(`❌ Settlement error: ${err.message}`)
+      .setBackground(COLOR.RED_BG).setFontColor(COLOR.RED_TX).setFontWeight('bold');
+    return;
+  }
+
+  const startRow = roster.length + 5;
+  sheet.getRange(startRow, 1, 1, 4).merge().setValue('SIMPLIFIED SETTLEMENT PLAN')
+    .setBackground(COLOR.HEADER).setFontColor('#FFFFFF').setFontWeight('bold');
+  sheet.getRange(startRow + 1, 1, 1, 4).setValues([['From (Debtor)', 'To (Creditor)', 'Amount', 'Instruction']])
+    .setBackground(COLOR.HEADER_MID).setFontColor('#FFFFFF').setFontWeight('bold');
+
+  if (settlements.length) {
+    const symbol = getCurrencySymbol_();
+    const rows = settlements.map(settlement => {
+      const amount = fromMinor_(settlement.amountMinor);
+      return [
+        settlement.from,
+        settlement.to,
+        amount,
+        `${settlement.from} pays ${settlement.to} ${symbol}${amount.toFixed(2)}`
+      ];
+    });
+    sheet.getRange(startRow + 2, 1, rows.length, 4).setValues(rows);
+    sheet.getRange(startRow + 2, 3, rows.length, 1).setNumberFormat(format);
+  } else {
+    sheet.getRange(startRow + 2, 1, 1, 4).merge().setValue('All debts settled!').setFontStyle('italic');
+  }
+}
+
+function escapeHtml_(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function testEmailPermission() {
+  const email = Session.getActiveUser().getEmail();
+  if (!email) {
+    safeAlert('Could not detect your email. Run this from the desktop spreadsheet while signed in.');
+    return;
+  }
+  try {
+    MailApp.sendEmail(email, 'Expense Splitter — Test', 'Email permission is working.');
+    safeAlert(`✅ Test email sent to ${email}. Check inbox and spam.`);
+  } catch (err) {
+    safeAlert(`❌ Test failed: ${err.message}`);
+  }
+}
+
 function sendPdfReports() {
-  // Pre-flight setup checks
   if (!validateSetupStatus()) {
-    safeAlert("Cannot send reports: Setup is incomplete. Check the 'Setup' tab status cell.");
+    safeAlert('Cannot send reports: complete Setup first.');
     return;
   }
   if (!isExpensesConfirmed()) {
-    safeAlert("Expenses are not confirmed yet. Tick 'All Expenses Confirmed' on the Setup sheet first.");
+    safeAlert('Confirm expenses through Setup!B6 before sending reports.');
     return;
   }
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const setupSheet = ss.getSheetByName(SHEET_SETUP);
   const reportsSheet = ss.getSheetByName(SHEET_REPORTS);
+  const ledger = buildLedger_();
 
-  const tripName = setupSheet.getRange("B2").getValue();
-  const currencySymbol = setupSheet.getRange("B4").getValue() || "₹";
-  const todayStr = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), "dd-MMM-yyyy");
-
-  const { expenses, roster, names } = getConfirmedExpenses();
-  if (expenses.length === 0) {
-    safeAlert("No expense rows found on the 'Expenses' sheet.");
+  if (ledger.errors.length) {
+    safeAlert(`Cannot send reports: ${ledger.errors.join(' | ')}`);
+    return;
+  }
+  if (!ledger.expenses.length) {
+    safeAlert('No valid expenses found.');
     return;
   }
 
-  // Calculate totals and overall settlement matrix
-  const totals = computeTotals(expenses, names);
-  const balancesMap = {};
-  names.forEach(n => balancesMap[n] = totals[n].net);
-  const allSettlements = calculateGreedySettlements(balancesMap);
+  let settlements;
+  try {
+    settlements = calculateGreedySettlements_(ledger);
+  } catch (err) {
+    safeAlert(`Cannot send reports: ${err.message}`);
+    return;
+  }
 
-  // Track distribution progress and failure counters
+  const tripName = String(setupSheet.getRange('B2').getValue());
+  const currency = getCurrencySymbol_();
+  const today = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'dd-MMM-yyyy');
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  let sentCount = 0, skippedCount = 0;
+  let sent = 0;
+  let skipped = 0;
   const failures = [];
 
-  // Iterate over each roster member to build and issue personalized PDF statements
-  roster.forEach((person, idx) => {
-    const statusCell = reportsSheet.getRange(3 + idx, 6);
+  ledger.roster.forEach((person, index) => {
+    const statusCell = reportsSheet.getRange(3 + index, 6);
+    if (!person.email || !emailRegex.test(person.email)) {
+      statusCell.setValue('Skipped (no email)').setFontColor(COLOR.WARN_TX);
+      skipped++;
+      return;
+    }
+
     try {
-      if (!person.email || !emailRegex.test(person.email)) {
-        statusCell.setValue("Skipped (no email)").setFontColor(COLOR.WARN_TX);
-        skippedCount++;
-        return;
-      }
+      const relevantExpenses = ledger.expenses.filter(expense =>
+        expense.paidById === person.id || expense.includedIds.includes(person.id)
+      );
+      const actions = settlements.filter(settlement =>
+        settlement.fromId === person.id || settlement.toId === person.id
+      );
 
-      // Only expenses where this person paid or is included
-      const relevant = [];
-      expenses.forEach(e => {
-        const isPayer = e.paidBy === person.name;
-        const isIncluded = e.included.includes(person.name);
-        if (!isPayer && !isIncluded) return;
+      const expenseRows = relevantExpenses.map(expense => {
+        const payer = ledger.peopleById.get(expense.paidById);
+        const share = fromMinor_(expense.allocations.get(person.id) || 0);
+        return `<tr><td>${escapeHtml_(expense.date)}</td><td>${escapeHtml_(expense.description)}</td><td>${currency}${fromMinor_(expense.amountMinor).toFixed(2)}</td><td>${escapeHtml_(payer.name)}</td><td>${currency}${share.toFixed(2)}</td></tr>`;
+      }).join('') || '<tr><td colspan="5">No expenses involve you.</td></tr>';
 
-        const baseShare = Math.floor((e.amount / e.included.length) * 100) / 100;
-        const remainder = Math.round((e.amount - baseShare * e.included.length) * 100) / 100;
-        const myShare = isIncluded ? baseShare + (isPayer ? remainder : 0) : 0;
+      const actionRows = actions.map(action => {
+        const text = action.fromId === person.id
+          ? `You pay <b>${escapeHtml_(action.to)}</b> ${currency}${fromMinor_(action.amountMinor).toFixed(2)}`
+          : `<b>${escapeHtml_(action.from)}</b> pays you ${currency}${fromMinor_(action.amountMinor).toFixed(2)}`;
+        return `<li>${text}</li>`;
+      }).join('') || '<li>No settlement required.</li>';
 
-        relevant.push({ date: e.date, desc: e.desc, amount: e.amount, paidBy: e.paidBy, myShare: myShare });
-      });
+      const paid = fromMinor_(ledger.paid.get(person.id) || 0);
+      const spent = fromMinor_(ledger.spent.get(person.id) || 0);
+      const net = fromMinor_(ledger.balances.get(person.id) || 0);
 
-      const myTotals = totals[person.name];
-      const mySettlements = allSettlements.filter(s => s.from === person.name || s.to === person.name);
+      const html = `
+        <html><head><style>
+          body{font-family:Arial,sans-serif;margin:24px;color:#1f2937}
+          h1{color:#0f766e;margin-bottom:4px} h3{font-weight:normal;color:#64748b;margin-top:0}
+          .cards{display:flex;gap:10px;margin:20px 0}.card{flex:1;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;text-align:center}
+          .label{font-size:11px;color:#64748b;text-transform:uppercase}.value{font-size:18px;font-weight:bold;margin-top:4px}
+          table{width:100%;border-collapse:collapse;margin-top:10px}th{background:#1e293b;color:#fff;padding:8px;text-align:left;font-size:12px}td{padding:8px;border-bottom:1px solid #e2e8f0;font-size:11px}
+          .box{margin-top:18px;padding:12px;background:#f0fdf4;border:1px solid #bbf7d0}
+        </style></head><body>
+          <h1>${escapeHtml_(tripName)}</h1>
+          <h3>Expense Report for <b>${escapeHtml_(person.name)}</b> · Generated ${today}</h3>
+          <div class="cards">
+            <div class="card"><div class="label">Total Paid</div><div class="value">${currency}${paid.toFixed(2)}</div></div>
+            <div class="card"><div class="label">Spent (Share)</div><div class="value">${currency}${spent.toFixed(2)}</div></div>
+            <div class="card"><div class="label">Net Balance</div><div class="value">${currency}${net.toFixed(2)}</div></div>
+          </div>
+          <h4>Your Relevant Expenses</h4>
+          <table><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Paid By</th><th>Your Share</th></tr></thead><tbody>${expenseRows}</tbody></table>
+          <div class="box"><h4>Your Settlement Actions</h4><ul>${actionRows}</ul></div>
+        </body></html>`;
 
-      // Build personalized HTML layout string for PDF export
-      const htmlContent = `
-        <html>
-          <head>
-            <style>
-              body { font-family: 'Roboto', sans-serif; margin: 20px; color: #333; }
-              h1 { color: #0F766E; margin-bottom: 2px; }
-              h3 { color: #64748B; margin-top: 0; font-weight: normal; }
-              .card-container { display: flex; margin: 20px 0; gap: 10px; }
-              .card { background: #F8FAFC; border: 1px solid #E2E8F0; padding: 12px; border-radius: 6px; flex: 1; text-align: center; }
-              .card-title { font-size: 11px; color: #64748B; text-transform: uppercase; }
-              .card-val { font-size: 18px; font-weight: bold; margin-top: 4px; }
-              table { width: 100%; border-collapse: collapse; margin-top: 15px; }
-              th { background: #1E293B; color: white; padding: 8px; font-size: 12px; text-align: left; }
-              td { padding: 8px; border-bottom: 1px solid #E2E8F0; font-size: 11px; }
-              .box { background: #F0FDF4; border: 1px solid #BBF7D0; padding: 12px; border-radius: 6px; margin-top: 20px; }
-              .badge-green { color: #065F46; }
-              .badge-red { color: #991B1B; }
-            </style>
-          </head>
-          <body>
-            <h1>${tripName}</h1>
-            <h3>Expense Report for <b>${person.name}</b> &bull; Generated on ${todayStr}</h3>
-
-            <div class="card-container">
-              <div class="card"><div class="card-title">Total Paid</div><div class="card-val">${currencySymbol}${myTotals.paid.toFixed(2)}</div></div>
-              <div class="card"><div class="card-title">Total Share</div><div class="card-val">${currencySymbol}${myTotals.share.toFixed(2)}</div></div>
-              <div class="card"><div class="card-title">Net Balance</div><div class="card-val ${myTotals.net >= 0 ? 'badge-green' : 'badge-red'}">${currencySymbol}${myTotals.net.toFixed(2)}</div></div>
-            </div>
-
-            <h4>Your Relevant Expenses</h4>
-            <table>
-              <thead>
-                <tr><th>Date</th><th>Description</th><th>Total Amount</th><th>Paid By</th><th>Your Share</th></tr>
-              </thead>
-              <tbody>
-                ${relevant.length > 0 ? relevant.map(e => `
-                  <tr>
-                    <td>${e.date}</td>
-                    <td>${e.desc}</td>
-                    <td>${currencySymbol}${e.amount.toFixed(2)}</td>
-                    <td>${e.paidBy}</td>
-                    <td>${currencySymbol}${e.myShare.toFixed(2)}</td>
-                  </tr>
-                `).join('') : '<tr><td colspan="5">No expenses involve you.</td></tr>'}
-              </tbody>
-            </table>
-
-            <div class="box">
-              <h4 style="margin-top:0;">Your Settlement Action Items</h4>
-              ${mySettlements.length > 0 ? `
-                <ul>
-                  ${mySettlements.map(s => `
-                    <li>${s.from === person.name
-                      ? `You owe <b>${s.to}</b> <b>${currencySymbol}${s.amount.toFixed(2)}</b>`
-                      : `<b>${s.from}</b> owes you <b>${currencySymbol}${s.amount.toFixed(2)}</b>`}</li>
-                  `).join('')}
-                </ul>
-              ` : '<p>You have no pending settlement actions!</p>'}
-            </div>
-
-            <h4 style="margin-top:25px;">Full Group Settlement Plan (For Transparency)</h4>
-            <ul>
-              ${allSettlements.length > 0
-                ? allSettlements.map(s => `<li>${s.from} pays ${s.to} ${currencySymbol}${s.amount.toFixed(2)}</li>`).join('')
-                : '<li>All settled up!</li>'}
-            </ul>
-          </body>
-        </html>
-      `;
-
-      // Generate PDF attachment blob from HTML string
-      const pdfBlob = HtmlService.createHtmlOutput(htmlContent)
-        .getAs('application/pdf')
+      const pdf = HtmlService.createHtmlOutput(html).getAs('application/pdf')
         .setName(`${tripName} - ${person.name} Expense Report.pdf`);
+      MailApp.sendEmail(
+        person.email,
+        `[${tripName}] — Your Expense Report`,
+        `Hi ${person.name},\n\nYour itemized expense report is attached.\n\nRegards,\nGroup Expense Splitter`,
+        { attachments: [pdf] }
+      );
 
-      // Define message details and dispatch email with PDF attachment
-      const subject = `[${tripName}] — Your Expense Report`;
-      const body = `Hi ${person.name},\n\nHere is your itemized expense report for "${tripName}". Please find your PDF breakdown attached.\n\nBest regards,\nGroup Expense Splitter`;
-
-      MailApp.sendEmail(person.email, subject, body, { attachments: [pdfBlob] });
-
-      // Log success status and timestamp in reports sheet
-      const timestamp = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), "dd-MMM HH:mm");
-      statusCell.setValue(`Sent (${timestamp})`).setFontColor("#166534");
-      sentCount++;
-
+      const stamp = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'dd-MMM HH:mm');
+      statusCell.setValue(`Sent (${stamp})`).setFontColor(COLOR.GREEN_TX);
+      sent++;
     } catch (err) {
-      // Record errors to status column
       statusCell.setValue(`Failed: ${err.message}`).setFontColor(COLOR.RED_TX);
       failures.push(`${person.name}: ${err.message}`);
     }
   });
 
-  // Render dispatch summary alert
-  let msg = `Done! Sent: ${sentCount}, Skipped (no email): ${skippedCount}, Failed: ${failures.length}.`;
-  if (failures.length > 0) msg += `\n\nFailure reasons:\n• ${failures.join("\n• ")}`;
-  msg += `\n\nNote: emails are sent FROM the Google account that ran this function — check that account's Sent folder.`;
-  safeAlert(msg);
+  let message = `Done! Sent: ${sent}, Skipped (no email): ${skipped}, Failed: ${failures.length}.`;
+  if (failures.length) message += `\n\n${failures.join('\n')}`;
+  safeAlert(message);
+}
+
+function diagnose() {
+  const ledger = buildLedger_();
+  const lines = [
+    `Confirmed: ${isExpensesConfirmed()}`,
+    `Roster: ${ledger.roster.map(person => `${person.id}:${person.name}`).join(', ') || 'none'}`,
+    `Valid expenses: ${ledger.expenses.length}`,
+    `Total spent: ${fromMinor_(ledger.totalMinor).toFixed(2)}`,
+    `Ledger errors: ${ledger.errors.length ? ledger.errors.join(' | ') : 'none'}`
+  ];
+
+  let sum = 0;
+  ledger.roster.forEach(person => {
+    const net = ledger.balances.get(person.id) || 0;
+    sum += net;
+    lines.push(`${person.name}: ${fromMinor_(net).toFixed(2)}`);
+  });
+  lines.push(`Net balance sum: ${sum} paise`);
+
+  try {
+    const settlements = calculateGreedySettlements_(ledger);
+    lines.push(`Settlement rows: ${settlements.length}`);
+    settlements.forEach(item => lines.push(`${item.from} -> ${item.to}: ${fromMinor_(item.amountMinor).toFixed(2)}`));
+  } catch (err) {
+    lines.push(`Settlement validation failed: ${err.message}`);
+  }
+
+  safeAlert(lines.join('\n'));
 }
