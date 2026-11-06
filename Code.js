@@ -9,7 +9,7 @@
  * SETUP FLOW
  * 1. Configure trip name, people count, participant names, and optional emails.
  * 2. Use Expense Splitter > Confirm / Update Setup.
- * 3. The script rebuilds participant columns and moves the Live Summary table.
+ * 3. The script rebuilds participant columns; Live Summary is in Send Reports.
  * 4. Changes to participant count/names require re-confirmation.
  *
  * EXPENSES LAYOUT
@@ -21,11 +21,8 @@
  * F onward: Generated per-person net values
  *
  * LIVE SUMMARY POSITION
- * Always begins one blank column after the last participant column:
- * 2 people: F:G participants, H spacer, I summary
- * 3 people: F:H participants, I spacer, J summary
- * 4 people: F:I participants, J spacer, K summary
- * 6 people: F:K participants, L spacer, M summary
+ * Send Reports!H:K always contains the live summary, even before confirmation.
+ * Expenses contains inputs A:E and dynamically sized participant net columns.
  */
 
 const SHEET_SETUP = 'Setup';
@@ -243,6 +240,9 @@ function confirmSetupFromMenu() {
   try {
     lock.waitLock(10000);
 
+    setupSheet.getRange(SETUP_CONFIRM_CELL).setValue(false);
+    setupSheet.getRange(SETUP_UPDATE_CELL).setValue(false);
+
     adjustRosterRows();
 
     if (!validateSetupStatus()) {
@@ -263,26 +263,26 @@ function confirmSetupFromMenu() {
       return;
     }
 
-    updateExpensesStructure();
-    recalculateAll(true);
-
     setupSheet.getRange(SETUP_CONFIRM_CELL).setValue(true);
     setupSheet.getRange(SETUP_UPDATE_CELL).setValue(false);
+
+    updateExpensesStructure();
+    recalculateAll(true);
 
     const participantStart = colNumToLetter_(FIRST_PERSON_COL);
     const participantEnd = colNumToLetter_(
       FIRST_PERSON_COL + personCount - 1
     );
-    const summaryStart = colNumToLetter_(getSummaryCol_(personCount));
 
     safeAlert(
       'Setup confirmed successfully.\n\n' +
       `Participants: ${personCount}\n` +
       `Participant columns: ${participantStart}:${participantEnd}\n` +
-      `Live Summary starts at: ${summaryStart}`
+      'Live Summary: Send Reports!H:K'
     );
 
   } catch (err) {
+    setupSheet.getRange(SETUP_CONFIRM_CELL).setValue(false);
     safeAlert(`Setup update failed: ${err.message}`);
     Logger.log(err.stack || err.message);
 
@@ -331,7 +331,7 @@ function getCurrencyFormat_() {
 }
 
 /**
- * Dynamic Live Summary start column.
+ * Former Expenses Live Summary start column, retained for legacy-area cleanup.
  *
  * Last participant:
  * FIRST_PERSON_COL + personCount - 1
@@ -568,9 +568,11 @@ function adjustRosterRows() {
         ROSTER_START_ROW + target,
         1,
         current - target,
-        3
+        1
       )
       .clearContent();
+
+    // Preserve names and emails so shrinking and regrowing never erases input.
   }
 
   const numbering = [];
@@ -627,12 +629,29 @@ function onEdit(e) {
     const changedPeopleCount = a1 === SETUP_NUM_PEOPLE_CELL;
     const changedCurrency = a1 === SETUP_CURRENCY_CELL;
 
-    const changedRoster = row >= ROSTER_START_ROW &&
+    const editedLastRow = row + range.getNumRows() - 1;
+    const editedLastCol = col + range.getNumColumns() - 1;
+    const changedRoster = editedLastRow >= ROSTER_START_ROW &&
       row < ROSTER_START_ROW + MAX_PARTICIPANTS &&
-      col >= ROSTER_COL_NUMBER &&
-      col <= ROSTER_COL_EMAIL;
+      col <= ROSTER_COL_EMAIL && editedLastCol >= ROSTER_COL_NUMBER;
+
+    // New names below the active roster expand the selected count automatically.
+    // Dormant rows outside this edit remain stored without reactivating them.
+    if (changedRoster && col <= ROSTER_COL_NAME && editedLastCol >= ROSTER_COL_NAME) {
+      let count = Number(sheet.getRange(SETUP_NUM_PEOPLE_CELL).getValue());
+      if (Number.isInteger(count) && count >= MIN_PARTICIPANTS && count <= MAX_PARTICIPANTS) {
+        const last = Math.min(editedLastRow, ROSTER_START_ROW + MAX_PARTICIPANTS - 1);
+        for (let rosterRow = Math.max(row, ROSTER_START_ROW + count); rosterRow <= last; rosterRow++) {
+          if (String(sheet.getRange(rosterRow, ROSTER_COL_NAME).getValue() || '').trim()) {
+            count = rosterRow - ROSTER_START_ROW + 1;
+          }
+        }
+        sheet.getRange(SETUP_NUM_PEOPLE_CELL).setValue(count);
+      }
+    }
 
     if (changedPeopleCount) {
+      sheet.getRange(SETUP_CONFIRM_CELL).setValue(false);
       adjustRosterRows();
       validateSetupStatus();
 
@@ -651,6 +670,8 @@ function onEdit(e) {
     }
 
     if (changedTripName || changedCurrency || changedRoster) {
+      sheet.getRange(SETUP_CONFIRM_CELL).setValue(false);
+      if (changedRoster) adjustRosterRows();
       validateSetupStatus();
 
       /*
@@ -724,9 +745,6 @@ function updateExpensesStructure() {
 
   const participantStartCol = FIRST_PERSON_COL;
   const participantEndCol = FIRST_PERSON_COL + participantCount - 1;
-
-  const summaryCol = getSummaryCol_(participantCount);
-  const summaryEndCol = summaryCol + SUMMARY_WIDTH - 1;
 
   const maxSummaryEndCol = getSummaryCol_(MAX_PARTICIPANTS) +
     SUMMARY_WIDTH - 1;
@@ -838,23 +856,7 @@ function updateExpensesStructure() {
     sheet.setColumnWidth(column, 105);
   }
 
-  /*
-   * One visible blank spacer column before Live Summary.
-   */
-  sheet.setColumnWidth(summaryCol - 1, 24);
-
-  sheet.setColumnWidth(summaryCol, 140);
-  sheet.setColumnWidth(summaryCol + 1, 105);
-  sheet.setColumnWidth(summaryCol + 2, 125);
-  sheet.setColumnWidth(summaryCol + 3, 170);
-
-  Logger.log(
-    `Expenses rebuilt. Participants: ${participantCount}; ` +
-    `Participant columns: ${colNumToLetter_(participantStartCol)}:` +
-    `${colNumToLetter_(participantEndCol)}; ` +
-    `Summary: ${colNumToLetter_(summaryCol)}:` +
-    `${colNumToLetter_(summaryEndCol)}`
-  );
+  Logger.log('Expenses rebuilt; live summary is in Send Reports!H:K.');
 
   return true;
 }
@@ -1161,13 +1163,15 @@ function recalculateAll(forceReports) {
   const ledger = buildLedger_();
   const roster = ledger.roster;
 
-  if (!roster.length) return;
+  if (!roster.length) {
+    updateSendReportsSheet(ledger);
+    return;
+  }
 
   const rosterCount = roster.length;
-  const summaryCol = getSummaryCol_(rosterCount);
   const format = getCurrencyFormat_();
 
-  const requiredColumns = summaryCol + SUMMARY_WIDTH - 1;
+  const requiredColumns = FIRST_PERSON_COL + rosterCount - 1;
 
   if (sheet.getMaxColumns() < requiredColumns) {
     sheet.insertColumnsAfter(
@@ -1216,11 +1220,8 @@ function recalculateAll(forceReports) {
       .setNumberFormat(format);
   }
 
-  writeLiveSummary_(sheet, summaryCol, ledger, format);
-
-  if (isExpensesConfirmed() || forceReports === true) {
-    updateSendReportsSheet();
-  }
+  // The summary remains live in Send Reports even before confirmation.
+  updateSendReportsSheet(ledger);
 }
 
 function writeLiveSummary_(sheet, col, ledger, format) {
@@ -1657,13 +1658,13 @@ function unconfirmExpenses() {
    REPORTS SHEET
    ========================================================= */
 
-function updateSendReportsSheet() {
+function updateSendReportsSheet(existingLedger) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   const sheet = ss.getSheetByName(SHEET_REPORTS) ||
     ss.insertSheet(SHEET_REPORTS);
 
-  const ledger = buildLedger_();
+  const ledger = existingLedger || buildLedger_();
   const roster = ledger.roster;
   const format = getCurrencyFormat_();
 
@@ -1677,10 +1678,10 @@ function updateSendReportsSheet() {
     );
   }
 
-  if (sheet.getMaxColumns() < 6) {
+  if (sheet.getMaxColumns() < 11) {
     sheet.insertColumnsAfter(
       sheet.getMaxColumns(),
-      6 - sheet.getMaxColumns()
+      11 - sheet.getMaxColumns()
     );
   }
 
@@ -1690,6 +1691,20 @@ function updateSendReportsSheet() {
   output.clearContent();
   output.clearFormat();
   output.clearDataValidations();
+
+  const liveRange = sheet.getRange(1, 8, MAX_PARTICIPANTS + 8, SUMMARY_WIDTH);
+  liveRange.breakApart().clearContent().clearFormat();
+  if (roster.length) writeLiveSummary_(sheet, 8, ledger, format);
+  sheet.setColumnWidth(7, 24);
+  sheet.setColumnWidth(8, 140);
+  sheet.setColumnWidth(9, 110);
+  sheet.setColumnWidth(10, 125);
+  sheet.setColumnWidth(11, 170);
+
+  if (!roster.length) {
+    sheet.getRange('A1:F1').merge().setValue('Complete Setup with valid participant names.');
+    return;
+  }
 
   if (!isExpensesConfirmed()) {
     sheet.getRange('A1:F1')
@@ -2175,9 +2190,6 @@ function diagnose() {
   const roster = ledger.roster;
 
   const participantCount = roster.length;
-  const summaryCol = participantCount
-    ? getSummaryCol_(participantCount)
-    : null;
 
   const lines = [
     `Setup confirmed: ${isSetupConfirmed()}`,
@@ -2188,9 +2200,7 @@ function diagnose() {
         ? `${colNumToLetter_(FIRST_PERSON_COL)}:${colNumToLetter_(FIRST_PERSON_COL + participantCount - 1)}`
         : 'none'
     }`,
-    `Expected summary start: ${
-      summaryCol ? colNumToLetter_(summaryCol) : 'none'
-    }`,
+    'Live Summary: Send Reports!H:K',
     `Expenses sheet exists: ${!!expensesSheet}`,
     `Valid expenses: ${ledger.expenses.length}`,
     `Total spent: ${fromMinor_(ledger.totalMinor).toFixed(2)}`,

@@ -29,6 +29,8 @@
 
 ## Final Design
 
+Roster update revision: new name edits can grow the active count to 15; explicit count reductions preserve inactive names and emails. Confirmation updates the flag before rebuilding outputs. The live summary now resides in Send Reports!H:K and refreshes before confirmation; expense inputs A:E remain intact. The existing exact solver and PDF calculations are unchanged.
+
 Sort nonzero balances by stable person ID. For each subset, store its balance sum, the largest number of zero-sum prefixes reachable in an ordering, and a predecessor. The recurrence removes one participant and adds one completed group when the current subset sums to zero. This takes O(n × 2^n) time and O(2^n) memory.
 
 Reconstruct the chosen ordering and split it wherever the running balance returns to zero. This yields the maximum number of disjoint balanced groups. Settle each group with the existing greedy payment generator. Maximum grouping ensures no group can split further, so a group of k people uses exactly k − 1 transfers. Verify the final count equals nonzero people minus groups and that every balance clears.

@@ -202,7 +202,7 @@ describe('Ledger calculations from spreadsheet input', () => {
 
 describe('Calculated values written to the spreadsheet', () => {
   it('writes signed row nets and summary Paid, Spent, and Net values', () => {
-    const { app, sheet } = loadAppsScript({ expenses: [
+    const { app, sheet, reports } = loadAppsScript({ expenses: [
       getMockExpense({ amount: 120, payer: 'Alice' }),
       getMockExpense({ amount: 60, payer: 'Bob', split: 'Bob, Cara' }),
       getMockExpense({ amount: 30, payer: 'Cara', split: 'Alice, Bob' })
@@ -211,9 +211,9 @@ describe('Calculated values written to the spreadsheet', () => {
     assert.deepEqual(plain(sheet.getRange(2, 6, 3, 3).getValues()), [
       [80, -40, -40], [0, 30, -30], [-15, -15, 30]
     ]);
-    // Three participants occupy F:H, I is a spacer, summary begins at J.
-    assert.equal(sheet.cell(2, 13), 210);
-    assert.deepEqual(plain(sheet.getRange(4, 10, 3, 4).getValues()), [
+    // Participant nets remain in Expenses; live totals appear in Send Reports!H:K.
+    assert.equal(reports.cell(2, 11), 210);
+    assert.deepEqual(plain(reports.getRange(4, 8, 3, 4).getValues()), [
       ['Alice', 120, 55, 65], ['Bob', 60, 85, -25], ['Cara', 30, 70, -40]
     ]);
   });
@@ -225,12 +225,13 @@ describe('Calculated values written to the spreadsheet', () => {
     assert.deepEqual(plain(sheet.getRange(2, 6, 1, 3).getValues()), [['', '', '']]);
   });
 
-  it('places the summary beyond all 15 participant columns without overwriting input', () => {
+  it('places the summary in Send Reports for 15 participants without overwriting input', () => {
     const expense = getMockExpense({ amount: 0.01 });
-    const { app, sheet } = loadAppsScript({ roster: getMockRoster(15), expenses: [expense] });
+    const { app, sheet, reports } = loadAppsScript({ roster: getMockRoster(15), expenses: [expense] });
     app.recalculateAll();
-    assert.equal(sheet.cell(1, 22), 'LIVE SUMMARY');
-    assert.equal(sheet.cell(2, 25), 0.01);
+    assert.equal(reports.cell(1, 8), 'LIVE SUMMARY');
+    assert.equal(reports.cell(2, 11), 0.01);
+    assert.equal(sheet.cell(1, 22), '');
     assert.deepEqual(plain(sheet.getRange(2, 1, 1, 5).getValues()), [expense]);
     assert.deepEqual(plain(sheet.getRange(2, 6, 1, 15).getValues()), [new Array(15).fill(0)]);
   });

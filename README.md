@@ -29,7 +29,7 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 
 * **Self-Hosted in Google Sheets:** No application subscription or ads. Supports up to 15 people and 500 expense rows per tracker; Google service quotas still apply.
 * **Instant Live Calculations:** Per-person split columns compute the moment you type an expense — no confirm step, no waiting, just like a native spreadsheet formula.
-* **Live Summary Panel:** A persistent dashboard beside your entries always shows the **Total Spent (Everyone)**, each person's **Spent (Share)** — what they technically consumed even if they paid nothing — and their **Net Balance** (+ collect / − owe).
+* **Live Summary Panel:** **Send Reports!H:K** always shows total group spending, each person's paid amount, consumed share, and net balance. It updates while editing expenses, even before confirmation.
 * **Exact Settlement Engine:** On confirmation, uses subset dynamic programming to find the fewest possible transfers for up to 15 people. Every settlement row explains the outstanding debt, credit, and payment amount.
 * **Automated PDF Email Statements:** Generates clean, personalized HTML/PDF expense reports — each person receives only the expenses that involve them — dispatched via Gmail in one click.
 * **Dynamic Roster Scaling:** Scale your group seamlessly from 2 to 15 people — the grid, dropdowns, person columns, and summary panel auto-adjust on the fly.
@@ -43,9 +43,11 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 
 <img src="assets/Setup.png" alt="Setup tab with trip name, participant count, currency, and four-person roster" width="586" />
 
-### 2. Expense Tracker & Live Summary
+### 2. Expense Tracker
 
 <img src="assets/Expense%20Tab.png" alt="Expenses tab showing shared expenses, individual balances, and the live summary" width="100%" />
+
+*Sheet screenshots show the previous summary placement. The current version keeps the live summary in **Send Reports!H:K**, separate from expense entry.*
 
 ### 3. Simplified Settlements
 
@@ -106,6 +108,8 @@ Use a Google account with permission to edit your own spreadsheet copy. Node.js 
 
 1. Fill in the trip name, participant count, currency symbol, and unique participant names on **Setup**. Emails are optional. Use names without commas so subgroup selections remain unambiguous.
 2. Select **Expense Splitter → Confirm / Update Setup**, or tick `Setup!B6` / `Setup!B7` on mobile.
+
+    Adding names below the active roster automatically raises **Number of People**, up to 15. You can also change `Setup!B3` directly. Reducing the count deactivates extra rows but preserves their names and emails; raising it restores those entries.
 3. Enter expenses in **Expenses!A2:E501**. Choose a payer and leave **Split Among** blank for everyone, or enter names such as `Rahul, Neha`.
 4. When ready to review, select **Confirm All Expenses** and open **Send Reports**. On mobile, tick `Setup!B6`; if already checked, clear it and tick it again to refresh.
 5. To send statements, use **3. Send PDF Reports via Email** on desktop and grant email permission if requested. Review delivery status in **Send Reports**.
@@ -142,9 +146,10 @@ Enter expenses in columns **A–E**; everything else is computed live:
 | D | Paid By | Dropdown, auto-filled from roster |
 | E | Split Among | `All`, blank, or comma-separated names |
 | F+ | *One column per person* | Net for that expense: amount paid minus personal share; + collect / − owe |
-| **K–N** | **LIVE SUMMARY panel** | Person, Paid, Spent (Share), Net (4-person roster; position shifts with group size) |
 
-**LIVE SUMMARY example:** Priya pays a ₹10,000 bill split equally among four people. Total Spent (Everyone) is ₹10,000:
+The live summary is in **Send Reports!H:K**. Expenses contains input columns A:E and participant net columns from F onward. Confirming an update removes the previous summary from Expenses without clearing expense inputs.
+
+**LIVE SUMMARY example (Send Reports):** Priya pays a ₹10,000 bill split equally among four people. Total Spent (Everyone) is ₹10,000:
 
 | Person | Paid | Spent (Share) | Net (+ collect / − owe) |
 |--------|-----:|--------------:|-----------------------:|
@@ -156,7 +161,7 @@ Enter expenses in columns **A–E**; everything else is computed live:
 **Duo example:** if Person 2 pays a ₹1,000 hotel bill split between both, the summary shows **Spent ₹500** for each person. Person 1's net is **−₹500** and Person 2's net is **+₹500**. The generated expense-row columns show those signed nets, not the ₹500 shares.
 
 ### 3️⃣ Send Reports
-Available when `Setup!B6` (**Setup Confirmed?**) is checked. Use **Confirm All Expenses** to refresh the report after reviewing expenses. It shows:
+The live summary in **H:K** is always available and recalculates on expense edits. The report and settlement tables in **A:F** require `Setup!B6` (**Setup Confirmed?**) to be checked. Use **Confirm All Expenses** to refresh the report after reviewing expenses. It shows:
 
 * **Personal Balances Summary** — per-person Total Paid, Total Share, Net Balance, and email delivery status.
 * **Simplified Settlement Plan** — the minimum set of "X pays Y ₹amount" transactions that settles the whole group.
@@ -196,7 +201,7 @@ The exact solver uses `O(n × 2^n)` time and `O(2^n)` memory, with at most 32,76
 ### Performance Design
 * Expense inputs are read as a range and calculated in memory; participant results and summary rows are written in batches.
 * Structural rebuilds (headers, dropdowns, validations) happen **only** on Setup/roster changes, never while typing expenses.
-* The Send Reports sheet rebuilds only on confirm toggles and while confirmed.
+* Send Reports refreshes on expense edits and setup changes. The live summary remains visible while settlement output is unconfirmed.
 * UI messages fall back from alerts to toasts or logs when dialogs are unavailable.
 
 ---
@@ -206,7 +211,7 @@ The exact solver uses `O(n × 2^n)` time and `O(2^n)` memory, with at most 32,76
 | Menu Item | Action |
 |-----------|--------|
 | `1. Initialize / Reset Tracker` | Clears and rebuilds the three tracker sheets |
-| `2. Recalculate Live Expenses` | Recalculates expense nets and live summary; refreshes reports when confirmed |
+| `2. Recalculate Live Expenses` | Recalculates expense nets and Send Reports live summary; settlement output requires confirmation |
 | `Confirm / Update Setup` | Validates the roster, rebuilds generated columns, and confirms setup |
 | `Confirm All Expenses` | Publishes balances + settlement plan (assignable to a drawing button) |
 | `Re-open for Editing (Unconfirm)` | Withdraws the report view |

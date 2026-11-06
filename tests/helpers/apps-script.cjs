@@ -53,6 +53,7 @@ function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26, maxRo
     autoResizeColumns() { return sheet; },
     autoResizeRows() { return sheet; },
     setColumnWidth() { return sheet; },
+    setFrozenRows() { return sheet; },
     getRange(row, col, height = 1, width = 1) {
       if (typeof row === 'string') {
         const match = /^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(row);
@@ -66,6 +67,12 @@ function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26, maxRo
         }
       }
       const range = {
+        getSheet: () => sheet,
+        getRow: () => row,
+        getColumn: () => col,
+        getNumRows: () => height,
+        getNumColumns: () => width,
+        getA1Notation: () => `${String.fromCharCode(64 + col)}${row}`,
         getValue: () => cell(row, col),
         getValues() {
           reads.push({ row, col, height, width });
@@ -95,7 +102,7 @@ function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26, maxRo
         'breakApart', 'clearFormat', 'merge', 'setBackground', 'setFontColor',
         'setFontWeight', 'setHorizontalAlignment', 'setNumberFormat',
         'setBackgrounds', 'setFontColors', 'setFontStyle', 'setFontSize', 'setWrap',
-        'clearDataValidations', 'setVerticalAlignment'
+        'clearDataValidations', 'setVerticalAlignment', 'setDataValidation'
       ]) range[method] = () => range;
       return range;
     }
@@ -118,6 +125,8 @@ function loadAppsScript({
     lastRow: lastRow ?? expenses.length + 1
   });
   const reports = getMockSheet([], { maxColumns: 6 });
+  setup.getName = () => 'Setup';
+  sheet.getName = () => 'Expenses';
   const spreadsheet = {
     getSheetByName(name) {
       if (name === 'Setup') return missingSetup ? null : setup;
@@ -129,7 +138,19 @@ function loadAppsScript({
   };
   const context = vm.createContext({
     Date,
-    SpreadsheetApp: { getActiveSpreadsheet: () => spreadsheet },
+    SpreadsheetApp: {
+      getActiveSpreadsheet: () => spreadsheet,
+      newDataValidation() {
+        const builder = {};
+        for (const method of ['requireDate', 'setAllowInvalid', 'setHelpText', 'requireValueInList']) {
+          builder[method] = () => builder;
+        }
+        builder.build = () => ({});
+        return builder;
+      }
+    },
+    Logger: { log() {} },
+    LockService: { getDocumentLock: () => ({ waitLock() {}, releaseLock() {} }) },
     Utilities: { formatDate: date => date.toISOString().slice(0, 10) }
   });
   vm.runInContext(source, context, { filename: 'Code.js', timeout: 1000 });

@@ -25,6 +25,7 @@ No dependencies, Google credentials, live spreadsheets, or email access are requ
 - Verify known minimum counts with 15 people and report timing for 20 maximum-size local cases without flaky runtime assertions.
 - Verify the simple explanation template with outstanding debt, outstanding credit, and the smaller payment amount; check exact cents, configured currency, report cleanup after roster changes or unconfirmation, and identical sheet/PDF payment instructions.
 - Check PDF statement pay/receive/settled states, payment-first reading order, personal expense filtering, escaped user content, and complete 500-row output.
+- Exercise real menu/B6/B7 setup confirmation, pasted roster growth, count shrink/regrowth without name or email loss, dynamic expense headers, legacy summary cleanup, and an always-live Send Reports!H:K summary.
 
 ## Visual PDF Previews
 
