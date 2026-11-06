@@ -1871,6 +1871,148 @@ function escapeHtml_(value) {
     .replace(/'/g, '&#039;');
 }
 
+/**
+ * Builds the same self-contained, print-oriented HTML used for emailed PDFs.
+ * Table layouts avoid reliance on flex/grid support in the PDF converter.
+ */
+function buildParticipantReportHtml_({ ledger, settlements, person, tripName, currency, generatedOn }) {
+  const money = minor => escapeHtml_(currency) + fromMinor_(minor).toFixed(2)
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const paid = ledger.paid.get(person.id) || 0;
+  const spent = ledger.spent.get(person.id) || 0;
+  const net = ledger.balances.get(person.id) || 0;
+  const state = net < 0 ? 'pay' : net > 0 ? 'receive' : 'settled';
+  const headline = net < 0 ? 'You need to pay' : net > 0 ? 'You will receive' : 'All settled';
+  const explanation = net < 0
+    ? 'Your share is more than you paid. The payments below settle the difference.'
+    : net > 0
+      ? 'You paid more than your share. The payments below return the difference to you.'
+      : 'Your payments already cover your share. No money needs to change hands.';
+  const relevantExpenses = ledger.expenses.filter(expense =>
+    expense.paidById === person.id || expense.includedIds.includes(person.id)
+  );
+  const actions = settlements.filter(action => action.fromId === person.id || action.toId === person.id);
+  const actionRows = actions.map(action => {
+    const text = action.fromId === person.id
+      ? `You pay <b>${escapeHtml_(action.to)}</b> ${money(action.amountMinor)}`
+      : `<b>${escapeHtml_(action.from)}</b> pays you ${money(action.amountMinor)}`;
+    return `<li>${text}</li>`;
+  }).join('') || '<li>No settlement required.</li>';
+  const expenseRows = relevantExpenses.map(expense => {
+    const payer = ledger.peopleById.get(expense.paidById);
+    return `<tr class="expense-row">
+      <td class="date">${escapeHtml_(expense.date || '—')}</td>
+      <td>${escapeHtml_(expense.description || 'Untitled expense')}</td>
+      <td class="amount">${money(expense.amountMinor)}</td>
+      <td>${escapeHtml_(payer.name)}</td>
+      <td class="amount share">${money(expense.allocations.get(person.id) || 0)}</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="5" class="empty">No expenses involve you.</td></tr>';
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>${escapeHtml_(tripName)} — ${escapeHtml_(person.name)} | Expense statement</title>
+  <style>
+    @page { size: A4; margin: 16mm 14mm 18mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #172d35; font: 10pt/1.45 Arial, Helvetica, sans-serif;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    table { width: 100%; border-collapse: collapse; }
+    .masthead { border-top: 5px solid #0f766e; margin-bottom: 22px; }
+    .masthead td { padding-top: 13px; vertical-align: top; }
+    .brand { color: #0f766e; font-size: 10pt; font-weight: bold; }
+    .document-type { text-align: right; color: #52636b; font-size: 8pt; letter-spacing: 1px; }
+    .eyebrow { margin: 0 0 6px; color: #52636b; font-size: 8pt; letter-spacing: 1.6px; text-transform: uppercase; }
+    h1 { margin: 0 0 8px; font-size: 27pt; line-height: 1.15; letter-spacing: -0.5px; }
+    .intro { margin: 0 0 3px; font-size: 11pt; }
+    .generated { margin: 0 0 23px; color: #52636b; font-size: 9pt; }
+    h1, h2, td, li, .intro { overflow-wrap: anywhere; word-wrap: break-word; }
+    h2 { margin: 0 0 9px; font-size: 11pt; line-height: 1.3;
+      page-break-after: avoid; break-after: avoid; }
+    .balance { padding: 19px 22px; border: 1px solid #c6e3df; border-left: 4px solid #0f766e;
+      background: #f0f8f6; margin: 23px 0 15px; page-break-inside: avoid; break-inside: avoid; }
+    .balance.pay { background: #fff8ec; border-color: #e7d6b8; border-left-color: #94620d; }
+    .balance.settled { background: #f4f6f7; border-color: #d9e0e3; border-left-color: #52636b; }
+    .balance-label { margin: 0; font-size: 10pt; font-weight: bold; }
+    .balance-value { margin: 2px 0 7px; font-size: 32pt; line-height: 1.2; font-weight: bold; letter-spacing: -1px; }
+    .balance-note { margin: 0; max-width: 490px; font-size: 9pt; color: #364f57; }
+    .actions { margin: 0 0 21px; padding: 0 2px; }
+    .settlement-list { margin: 0; padding: 0 0 0 19px; }
+    .settlement-list li { padding: 4px 0; page-break-inside: avoid; break-inside: avoid; }
+    .metrics { table-layout: fixed; border-top: 1px solid #d9e2e5; border-bottom: 1px solid #d9e2e5;
+      margin-bottom: 23px; page-break-inside: avoid; break-inside: avoid; }
+    .metrics td { width: 33.33%; padding: 14px 10px; vertical-align: top; }
+    .metrics td:first-child { padding-left: 0; }
+    .metric-label { display: block; font-size: 8pt; color: #52636b; margin-bottom: 4px; }
+    .metric-value { display: block; font-weight: bold; font-size: 16pt; line-height: 1.3; }
+    .metric-note { display: block; font-size: 8pt; color: #52636b; margin-top: 3px; }
+    .section-note { margin: -3px 0 12px; font-size: 9pt; color: #52636b; }
+    .expenses { table-layout: fixed; font-size: 9pt; line-height: 1.45; }
+    .expenses thead { display: table-header-group; }
+    .expenses th { background: #edf3f3; padding: 10px 7px; font-size: 8pt; text-align: left;
+      border-top: 1px solid #d3dfe0; border-bottom: 1px solid #d3dfe0; }
+    .expenses td { padding: 10px 7px; border-bottom: 1px solid #e2e8ea; vertical-align: top; }
+    .expenses tr { page-break-inside: avoid; break-inside: avoid; }
+    .expenses tbody tr:nth-child(even) { background: #f7f9fa; }
+    .expenses .amount { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .expenses .share { font-weight: bold; }
+    .expenses .date { color: #52636b; font-size: 8pt; }
+    .expenses .empty { padding: 20px 7px; color: #52636b; }
+    .personal-total { margin-top: 0; border-top: 2px solid #52636b; page-break-inside: avoid; break-inside: avoid; }
+    .personal-total td { padding: 11px 7px; font-weight: bold; }
+    .personal-total .amount { text-align: right; }
+    .report-footer { border-top: 1px solid #d9e2e5; margin-top: 25px; padding-top: 12px;
+      font-size: 8pt; color: #52636b; page-break-inside: avoid; break-inside: avoid; }
+    .report-footer p { margin: 0 0 4px; }
+  </style>
+</head>
+<body>
+  <table class="masthead" role="presentation"><tr>
+    <td class="brand">Expense Splitter</td><td class="document-type">PERSONAL TRIP STATEMENT</td>
+  </tr></table>
+  <p class="eyebrow">Your trip, accounted for</p>
+  <h1>${escapeHtml_(tripName)}</h1>
+  <p class="intro">Prepared for <strong>${escapeHtml_(person.name)}</strong></p>
+  <p class="generated">Generated ${escapeHtml_(generatedOn)}</p>
+
+  <section class="balance ${state}">
+    <p class="balance-label">${headline}</p>
+    <p class="balance-value">${money(Math.abs(net))}</p>
+    <p class="balance-note">${explanation}</p>
+  </section>
+  <section class="actions">
+    <h2>Your Settlement Actions</h2>
+    <ul class="settlement-list">${actionRows}</ul>
+  </section>
+
+  <table class="metrics" role="presentation"><tr>
+    <td><span class="metric-label">You paid</span><span class="metric-value">${money(paid)}</span>
+      <span class="metric-note">Money you covered</span></td>
+    <td><span class="metric-label">Your share</span><span class="metric-value">${money(spent)}</span>
+      <span class="metric-note">Your portion of expenses</span></td>
+    <td><span class="metric-label">Your net balance</span><span class="metric-value">${net < 0 ? '-' : net > 0 ? '+' : ''}${money(Math.abs(net))}</span>
+      <span class="metric-note">${net < 0 ? 'Amount to pay' : net > 0 ? 'Amount to receive' : 'Nothing outstanding'}</span></td>
+  </tr></table>
+
+  <h2>Your expense details</h2>
+  <p class="section-note">Only expenses you paid or shared are shown. Your share is the part you used, whoever paid.</p>
+  <table class="expenses" aria-label="Your relevant expenses">
+    <colgroup><col style="width:14%"><col style="width:31%"><col style="width:18%"><col style="width:19%"><col style="width:18%"></colgroup>
+    <thead><tr><th scope="col">Date</th><th scope="col">Expense</th><th scope="col" class="amount">Bill total</th><th scope="col">Paid by</th><th scope="col" class="amount">Your share</th></tr></thead>
+    <tbody>${expenseRows}</tbody>
+  </table>
+  <table class="personal-total" role="presentation"><tr><td>Your total share</td><td class="amount">${money(spent)}</td></tr></table>
+  <footer class="report-footer">
+    <p><strong>How to read this statement</strong></p>
+    <p>Your net balance = what you paid minus your share. A positive balance means you receive money; a negative balance means you pay.</p>
+    <p>Payments above settle your share across the group. This statement shows a plan, not a payment receipt.</p>
+  </footer>
+</body>
+</html>`;
+}
+
 function testEmailPermission() {
   const email = Session.getActiveUser().getEmail();
 
@@ -1964,164 +2106,14 @@ function sendPdfReports() {
     }
 
     try {
-      const relevantExpenses = ledger.expenses.filter(expense =>
-        expense.paidById === person.id ||
-        expense.includedIds.includes(person.id)
-      );
-
-      const actions = settlements.filter(settlement =>
-        settlement.fromId === person.id ||
-        settlement.toId === person.id
-      );
-
-      const expenseRows = relevantExpenses.map(expense => {
-        const payer = ledger.peopleById.get(expense.paidById);
-
-        const share = fromMinor_(
-          expense.allocations.get(person.id) || 0
-        );
-
-        return (
-          `<tr>` +
-          `<td>${escapeHtml_(expense.date)}</td>` +
-          `<td>${escapeHtml_(expense.description)}</td>` +
-          `<td>${currency}${fromMinor_(expense.amountMinor).toFixed(2)}</td>` +
-          `<td>${escapeHtml_(payer.name)}</td>` +
-          `<td>${currency}${share.toFixed(2)}</td>` +
-          `</tr>`
-        );
-      }).join('') || '<tr><td colspan="5">No expenses involve you.</td></tr>';
-
-      const actionRows = actions.map(action => {
-        const text = action.fromId === person.id
-          ? `You pay <b>${escapeHtml_(action.to)}</b> ${currency}${fromMinor_(action.amountMinor).toFixed(2)}`
-          : `<b>${escapeHtml_(action.from)}</b> pays you ${currency}${fromMinor_(action.amountMinor).toFixed(2)}`;
-
-        return `<li>${text}</li>`;
-      }).join('') || '<li>No settlement required.</li>';
-
-      const paid = fromMinor_(
-        ledger.paid.get(person.id) || 0
-      );
-
-      const spent = fromMinor_(
-        ledger.spent.get(person.id) || 0
-      );
-
-      const net = fromMinor_(
-        ledger.balances.get(person.id) || 0
-      );
-
-      const html = `
-        <html>
-          <head>
-            <style>
-              body {
-                font-family: Arial, sans-serif;
-                margin: 24px;
-                color: #1f2937;
-              }
-              h1 {
-                color: #0f766e;
-                margin-bottom: 4px;
-              }
-              h3 {
-                font-weight: normal;
-                color: #64748b;
-                margin-top: 0;
-              }
-              .cards {
-                display: flex;
-                gap: 10px;
-                margin: 20px 0;
-              }
-              .card {
-                flex: 1;
-                padding: 12px;
-                background: #f8fafc;
-                border: 1px solid #e2e8f0;
-                text-align: center;
-              }
-              .label {
-                font-size: 11px;
-                color: #64748b;
-                text-transform: uppercase;
-              }
-              .value {
-                font-size: 18px;
-                font-weight: bold;
-                margin-top: 4px;
-              }
-              table {
-                width: 100%;
-                border-collapse: collapse;
-                margin-top: 10px;
-              }
-              th {
-                background: #1e293b;
-                color: #ffffff;
-                padding: 8px;
-                text-align: left;
-                font-size: 12px;
-              }
-              td {
-                padding: 8px;
-                border-bottom: 1px solid #e2e8f0;
-                font-size: 11px;
-              }
-              .box {
-                margin-top: 18px;
-                padding: 12px;
-                background: #f0fdf4;
-                border: 1px solid #bbf7d0;
-              }
-            </style>
-          </head>
-          <body>
-            <h1>${escapeHtml_(tripName)}</h1>
-            <h3>
-              Expense Report for <b>${escapeHtml_(person.name)}</b>
-              · Generated ${today}
-            </h3>
-
-            <div class="cards">
-              <div class="card">
-                <div class="label">Total Paid</div>
-                <div class="value">${currency}${paid.toFixed(2)}</div>
-              </div>
-              <div class="card">
-                <div class="label">Spent (Share)</div>
-                <div class="value">${currency}${spent.toFixed(2)}</div>
-              </div>
-              <div class="card">
-                <div class="label">Net Balance</div>
-                <div class="value">${currency}${net.toFixed(2)}</div>
-              </div>
-            </div>
-
-            <h4>Your Relevant Expenses</h4>
-
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Description</th>
-                  <th>Amount</th>
-                  <th>Paid By</th>
-                  <th>Your Share</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${expenseRows}
-              </tbody>
-            </table>
-
-            <div class="box">
-              <h4>Your Settlement Actions</h4>
-              <ul>${actionRows}</ul>
-            </div>
-          </body>
-        </html>`;
+      const html = buildParticipantReportHtml_({
+        ledger,
+        settlements,
+        person,
+        tripName,
+        currency,
+        generatedOn: today
+      });
 
       const pdf = HtmlService
         .createHtmlOutput(html)

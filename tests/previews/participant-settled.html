@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>A long weekend in Goa — Alice | Expense statement</title>
+  <style>
+    @page { size: A4; margin: 16mm 14mm 18mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #172d35; font: 10pt/1.45 Arial, Helvetica, sans-serif;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    table { width: 100%; border-collapse: collapse; }
+    .masthead { border-top: 5px solid #0f766e; margin-bottom: 22px; }
+    .masthead td { padding-top: 13px; vertical-align: top; }
+    .brand { color: #0f766e; font-size: 10pt; font-weight: bold; }
+    .document-type { text-align: right; color: #52636b; font-size: 8pt; letter-spacing: 1px; }
+    .eyebrow { margin: 0 0 6px; color: #52636b; font-size: 8pt; letter-spacing: 1.6px; text-transform: uppercase; }
+    h1 { margin: 0 0 8px; font-size: 27pt; line-height: 1.15; letter-spacing: -0.5px; }
+    .intro { margin: 0 0 3px; font-size: 11pt; }
+    .generated { margin: 0 0 23px; color: #52636b; font-size: 9pt; }
+    h1, h2, td, li, .intro { overflow-wrap: anywhere; word-wrap: break-word; }
+    h2 { margin: 0 0 9px; font-size: 11pt; line-height: 1.3;
+      page-break-after: avoid; break-after: avoid; }
+    .balance { padding: 19px 22px; border: 1px solid #c6e3df; border-left: 4px solid #0f766e;
+      background: #f0f8f6; margin: 23px 0 15px; page-break-inside: avoid; break-inside: avoid; }
+    .balance.pay { background: #fff8ec; border-color: #e7d6b8; border-left-color: #94620d; }
+    .balance.settled { background: #f4f6f7; border-color: #d9e0e3; border-left-color: #52636b; }
+    .balance-label { margin: 0; font-size: 10pt; font-weight: bold; }
+    .balance-value { margin: 2px 0 7px; font-size: 32pt; line-height: 1.2; font-weight: bold; letter-spacing: -1px; }
+    .balance-note { margin: 0; max-width: 490px; font-size: 9pt; color: #364f57; }
+    .actions { margin: 0 0 21px; padding: 0 2px; }
+    .settlement-list { margin: 0; padding: 0 0 0 19px; }
+    .settlement-list li { padding: 4px 0; page-break-inside: avoid; break-inside: avoid; }
+    .metrics { table-layout: fixed; border-top: 1px solid #d9e2e5; border-bottom: 1px solid #d9e2e5;
+      margin-bottom: 23px; page-break-inside: avoid; break-inside: avoid; }
+    .metrics td { width: 33.33%; padding: 14px 10px; vertical-align: top; }
+    .metrics td:first-child { padding-left: 0; }
+    .metric-label { display: block; font-size: 8pt; color: #52636b; margin-bottom: 4px; }
+    .metric-value { display: block; font-weight: bold; font-size: 16pt; line-height: 1.3; }
+    .metric-note { display: block; font-size: 8pt; color: #52636b; margin-top: 3px; }
+    .section-note { margin: -3px 0 12px; font-size: 9pt; color: #52636b; }
+    .expenses { table-layout: fixed; font-size: 9pt; line-height: 1.45; }
+    .expenses thead { display: table-header-group; }
+    .expenses th { background: #edf3f3; padding: 10px 7px; font-size: 8pt; text-align: left;
+      border-top: 1px solid #d3dfe0; border-bottom: 1px solid #d3dfe0; }
+    .expenses td { padding: 10px 7px; border-bottom: 1px solid #e2e8ea; vertical-align: top; }
+    .expenses tr { page-break-inside: avoid; break-inside: avoid; }
+    .expenses tbody tr:nth-child(even) { background: #f7f9fa; }
+    .expenses .amount { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .expenses .share { font-weight: bold; }
+    .expenses .date { color: #52636b; font-size: 8pt; }
+    .expenses .empty { padding: 20px 7px; color: #52636b; }
+    .personal-total { margin-top: 0; border-top: 2px solid #52636b; page-break-inside: avoid; break-inside: avoid; }
+    .personal-total td { padding: 11px 7px; font-weight: bold; }
+    .personal-total .amount { text-align: right; }
+    .report-footer { border-top: 1px solid #d9e2e5; margin-top: 25px; padding-top: 12px;
+      font-size: 8pt; color: #52636b; page-break-inside: avoid; break-inside: avoid; }
+    .report-footer p { margin: 0 0 4px; }
+  </style>
+</head>
+<body>
+  <table class="masthead" role="presentation"><tr>
+    <td class="brand">Expense Splitter</td><td class="document-type">PERSONAL TRIP STATEMENT</td>
+  </tr></table>
+  <p class="eyebrow">Your trip, accounted for</p>
+  <h1>A long weekend in Goa</h1>
+  <p class="intro">Prepared for <strong>Alice</strong></p>
+  <p class="generated">Generated 06-Nov-2026</p>
+
+  <section class="balance settled">
+    <p class="balance-label">All settled</p>
+    <p class="balance-value">₹0.00</p>
+    <p class="balance-note">Your payments already cover your share. No money needs to change hands.</p>
+  </section>
+  <section class="actions">
+    <h2>Your Settlement Actions</h2>
+    <ul class="settlement-list"><li>No settlement required.</li></ul>
+  </section>
+
+  <table class="metrics" role="presentation"><tr>
+    <td><span class="metric-label">You paid</span><span class="metric-value">₹450.00</span>
+      <span class="metric-note">Money you covered</span></td>
+    <td><span class="metric-label">Your share</span><span class="metric-value">₹450.00</span>
+      <span class="metric-note">Your portion of expenses</span></td>
+    <td><span class="metric-label">Your net balance</span><span class="metric-value">₹0.00</span>
+      <span class="metric-note">Nothing outstanding</span></td>
+  </tr></table>
+
+  <h2>Your expense details</h2>
+  <p class="section-note">Only expenses you paid or shared are shown. Your share is the part you used, whoever paid.</p>
+  <table class="expenses" aria-label="Your relevant expenses">
+    <colgroup><col style="width:14%"><col style="width:31%"><col style="width:18%"><col style="width:19%"><col style="width:18%"></colgroup>
+    <thead><tr><th scope="col">Date</th><th scope="col">Expense</th><th scope="col" class="amount">Bill total</th><th scope="col">Paid by</th><th scope="col" class="amount">Your share</th></tr></thead>
+    <tbody><tr class="expense-row">
+      <td class="date">—</td>
+      <td>Personal lunch</td>
+      <td class="amount">₹450.00</td>
+      <td>Alice</td>
+      <td class="amount share">₹450.00</td>
+    </tr></tbody>
+  </table>
+  <table class="personal-total" role="presentation"><tr><td>Your total share</td><td class="amount">₹450.00</td></tr></table>
+  <footer class="report-footer">
+    <p><strong>How to read this statement</strong></p>
+    <p>Your net balance = what you paid minus your share. A positive balance means you receive money; a negative balance means you pay.</p>
+    <p>Payments above settle your share across the group. This statement shows a plan, not a payment receipt.</p>
+  </footer>
+</body>
+</html>

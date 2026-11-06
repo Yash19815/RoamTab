@@ -324,7 +324,7 @@ describe('Settlement explanations in the report sheet', () => {
     for (const person of roster) {
       const email = outgoing.find(item => item.to === person.email);
       const html = email.options.attachments[0].html;
-      const [, actions] = /<h4>Your Settlement Actions<\/h4>\s*<ul>(.*?)<\/ul>/s.exec(html);
+      const [, actions] = /<ul class="settlement-list">(.*?)<\/ul>/s.exec(html);
       const expected = payments.flatMap(([from, to, amount]) => {
         if (from === person.name) return [`<li>You pay <b>${to}</b> ₹${amount.toFixed(2)}</li>`];
         if (to === person.name) return [`<li><b>${from}</b> pays you ₹${amount.toFixed(2)}</li>`];

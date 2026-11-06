@@ -7,6 +7,7 @@ node --test
 node --test tests/calculations.test.cjs
 node --test tests/settlements.test.cjs
 node --test tests/optimal-settlements.test.cjs
+node --test tests/pdf-report.test.cjs
 ```
 
 No dependencies, Google credentials, live spreadsheets, or email access are required.
@@ -23,6 +24,13 @@ No dependencies, Google credentials, live spreadsheets, or email access are requ
 - Check the production exact solver against the independent exhaustive oracle for 625 balanced five-person cases and 200 seeded groups of up to 10 people.
 - Verify known minimum counts with 15 people and report timing for 20 maximum-size local cases without flaky runtime assertions.
 - Verify the simple explanation template with outstanding debt, outstanding credit, and the smaller payment amount; check exact cents, configured currency, report cleanup after roster changes or unconfirmation, and identical sheet/PDF payment instructions.
+- Check PDF statement pay/receive/settled states, payment-first reading order, personal expense filtering, escaped user content, and complete 500-row output.
+
+## Visual PDF Previews
+
+Run `node tests/preview-pdf.cjs` to generate receive, pay, settled, and 80-expense HTML samples in `tests/previews/`. The samples call the production report builder with fictional ledger data; they never send email. Open the HTML files in a browser, then print to A4 PDF with browser headers and footers disabled.
+
+Inspect single-page spacing, currency glyphs, long descriptions, repeated table headings, final totals, and page boundaries. Local Chromium rendering is a visual check, not a substitute for verifying Apps Script's actual HTML-to-PDF converter. Preview artifacts are ignored by Git and clasp.
 
 ## Findings
 

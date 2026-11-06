@@ -204,9 +204,29 @@ travel-expense-excel/
     ├── calculations.test.cjs # Money, ledger, and sheet output tests
     ├── optimal-settlements.test.cjs # Exact minima, explanations, and benchmarks
     ├── settlements.test.cjs  # Settlement validity and minimum-count checks
+    ├── pdf-report.test.cjs   # Personal statement content and privacy checks
+    ├── preview-pdf.cjs       # Generates sample report HTML without sending email
     ├── helpers/              # Spreadsheet boundary mocks and exact test oracle
     └── README.md             # Test scope and known limitations
 ```
+
+---
+
+## Participant PDF Design
+
+Each A4 statement starts with the trip and participant, followed by a prominent **You need to pay**, **You will receive**, or **All settled** amount. Exact payment instructions appear before the expense list. Three summary figures show money paid, personal share, and signed net balance.
+
+Expense rows use right-aligned amounts, a bold personal share, alternating backgrounds, and repeating column headings on long reports. Only expenses the recipient paid or shared appear. The final total reconciles to their personal share. Text labels explain pay/receive states without relying on color.
+
+Reports use a self-contained HTML template with system fonts and no external assets. The existing Apps Script PDF conversion and email flow use this template directly. Local Chromium samples verify layout; Apps Script conversion should also be checked in a development spreadsheet.
+
+Generate pay, receive, settled, and long-statement HTML previews without sending email:
+
+```sh
+node tests/preview-pdf.cjs
+```
+
+Open the files in `tests/previews/` and print to PDF using A4 paper with browser headers and footers disabled. Generated previews are Git-ignored and excluded from clasp uploads.
 
 ---
 
