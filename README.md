@@ -5,14 +5,14 @@
 **A zero-dependency, open-source Splitwise alternative built directly inside Google Sheets.**
 Instant per-person split calculations, a live group summary panel, exact minimum-transfer settlements, and 1-click personalized PDF email reports.
 
-[![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-4285F4?style=for-the-badge&logo=google&logoColor=white)](#)
-[![Google Sheets](https://img.shields.io/badge/Google%20Sheets-34A853?style=for-the-badge&logo=googlesheets&logoColor=white)](#)
+[![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-4285F4?style=for-the-badge&logo=google&logoColor=white)](#quick-start)
+[![Google Sheets](https://img.shields.io/badge/Google%20Sheets-34A853?style=for-the-badge&logo=googlesheets&logoColor=white)](#quick-start)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
-[![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen.svg?style=for-the-badge)](CONTRIBUTING.md)
+[![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen.svg?style=for-the-badge)](#contributing)
 
 <br />
 
-<a href="#-quick-start">
+<a href="#quick-start">
   <img src="assets/Expense%20Tab.png" alt="Expense tracker with per-person splits and live group balances" width="850" />
 </a>
 
@@ -27,13 +27,13 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 
 ## 🌟 Why Use This Over Splitwise?
 
-* **100% Free & Self-Hosted:** No subscription limits, item limits, or ads. Your trip data stays inside your Google Drive.
+* **Self-Hosted in Google Sheets:** No application subscription or ads. Supports up to 15 people and 500 expense rows per tracker; Google service quotas still apply.
 * **Instant Live Calculations:** Per-person split columns compute the moment you type an expense — no confirm step, no waiting, just like a native spreadsheet formula.
 * **Live Summary Panel:** A persistent dashboard beside your entries always shows the **Total Spent (Everyone)**, each person's **Spent (Share)** — what they technically consumed even if they paid nothing — and their **Net Balance** (+ collect / − owe).
-* **Exact Settlement Engine:** On confirmation, uses subset dynamic programming to find the fewest possible transfers for up to 15 people. Every settlement row explains the payment calculation and remaining balances.
+* **Exact Settlement Engine:** On confirmation, uses subset dynamic programming to find the fewest possible transfers for up to 15 people. Every settlement row explains the outstanding debt, credit, and payment amount.
 * **Automated PDF Email Statements:** Generates clean, personalized HTML/PDF expense reports — each person receives only the expenses that involve them — dispatched via Gmail in one click.
 * **Dynamic Roster Scaling:** Scale your group seamlessly from 2 to 15 people — the grid, dropdowns, person columns, and summary panel auto-adjust on the fly.
-* **Mobile-First Workflow:** Full functionality through checkboxes and automatic triggers; no dependency on desktop-only custom menus.
+* **Mobile Editing & Confirmation:** Enter expenses and confirm setup through checkboxes in the Sheets app. Send PDF emails from the desktop menu or Apps Script editor.
 
 ---
 
@@ -80,20 +80,37 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 
 ---
 
+<a id="quick-start"></a>
+
 ## ⚡ Quick Start
+
+Use a Google account with permission to edit your own spreadsheet copy. Node.js and clasp are only needed for local development.
+
+**Initialize only on a fresh copy:** `setup()` / `1. Initialize / Reset Tracker` clears the **Setup**, **Expenses**, and **Send Reports** sheets. Updating script code does not require running initialization again.
 
 ### Option A: 1-Click Google Sheet Template (Easiest)
 1. Click the **[Make a Copy Template Link](https://docs.google.com/spreadsheets/d/11dY2B2j1dNIRlWfagUtbX13LRmW894mhnhCGBVsx9oQ/copy)**.
 2. Open the newly created spreadsheet in your Google Drive.
-3. Open the custom **Expense Splitter** menu at the top and select `1. Initialize / Reset Tracker`.
-4. Authorize the Google Apps Script permissions when prompted.
+3. Reload the spreadsheet to load the **Expense Splitter** menu, then select `1. Initialize / Reset Tracker` on the fresh copy.
+4. Authorize the script when prompted, then follow **Daily workflow** below. If the menu is missing, open **Extensions → Apps Script** and run `setup()` once.
 
 ### Option B: Manual Setup via Google Apps Script
 1. Create a blank **Google Sheet**.
 2. Navigate to **Extensions** → **Apps Script**.
 3. Replace all content in `Code.gs` with the code from [`Code.js`](Code.js).
-4. Save the project and click **Run** on the `setup` function to authorize scopes (including **Send email as you**, required for PDF reports).
-5. Reload your Google Sheet — the custom **Expense Splitter** menu will appear in the top navigation toolbar.
+4. In Apps Script **Project Settings**, enable the manifest editor and copy [`appsscript.json`](appsscript.json) into the project's `appsscript.json` to match the V8 runtime and timezone.
+5. Save, select `setup` in the function dropdown, and click **Run** to initialize the blank sheet and authorize the script.
+6. Reload Google Sheets to load the **Expense Splitter** menu, then follow the workflow below.
+
+### Daily workflow
+
+1. Fill in the trip name, participant count, currency symbol, and unique participant names on **Setup**. Emails are optional. Use names without commas so subgroup selections remain unambiguous.
+2. Select **Expense Splitter → Confirm / Update Setup**, or tick `Setup!B6` / `Setup!B7` on mobile.
+3. Enter expenses in **Expenses!A2:E501**. Choose a payer and leave **Split Among** blank for everyone, or enter names such as `Rahul, Neha`.
+4. When ready to review, select **Confirm All Expenses** and open **Send Reports**. On mobile, tick `Setup!B6`; if already checked, clear it and tick it again to refresh.
+5. To send statements, use **3. Send PDF Reports via Email** on desktop and grant email permission if requested. Review delivery status in **Send Reports**.
+
+Confirmation is a report-visibility gate, not an edit lock: expense edits continue to recalculate the plan. Changing setup details resets confirmation. After renaming or removing participants, update their names in existing **Paid By** and **Split Among** entries before reconfirming.
 
 ---
 
@@ -108,7 +125,8 @@ Configure the trip and the group:
 | `Setup!B3` | Number of Participants (dropdown 2–15) | 4 |
 | `Setup!B4` | Currency Symbol | ₹ |
 | `Setup!B5` | Setup Status (auto-validated) | — |
-| `Setup!B6` | **All Expenses Confirmed** master checkbox | ☐ FALSE |
+| `Setup!B6` | **Setup Confirmed?** checkbox; also gates settlement/report output | ☐ FALSE |
+| `Setup!B7` | **Confirm / Update Setup** checkbox action; resets after use | ☐ FALSE |
 | `Setup!A9:C…` | Roster: `#` · `Name` · `Email (optional)` — rows scale with B3 | — |
 
 > Emails are **optional** — only people with an email address receive PDF reports; everyone else is cleanly skipped and logged.
@@ -123,28 +141,22 @@ Enter expenses in columns **A–E**; everything else is computed live:
 | C | Amount | Currency-formatted |
 | D | Paid By | Dropdown, auto-filled from roster |
 | E | Split Among | `All`, blank, or comma-separated names |
-| F+ | *One column per person* | Auto-computed share per row |
-| **K–M** | **LIVE SUMMARY panel** | Always-on totals (4-person roster; shifts right for larger groups) |
+| F+ | *One column per person* | Net for that expense: amount paid minus personal share; + collect / − owe |
+| **K–N** | **LIVE SUMMARY panel** | Person, Paid, Spent (Share), Net (4-person roster; position shifts with group size) |
 
-**LIVE SUMMARY panel** (updates instantly, never hidden):
+**LIVE SUMMARY example:** Priya pays a ₹10,000 bill split equally among four people. Total Spent (Everyone) is ₹10,000:
 
-```
-┌────────────────────┬───────────────┬──────────────────────────┐
-│ LIVE SUMMARY                                                │
-├────────────────────┴───────────────┬──────────────────────────┤
-│ Total Spent (Everyone)             │                 ₹10,000  │
-├────────────────────┬───────────────┼──────────────────────────┤
-│ Person             │ Spent (Share) │ Net (+ collect / − owe)  │
-├────────────────────┼───────────────┼──────────────────────────┤
-│ Rahul              │      ₹2,500   │                 −₹2,500  │
-│ Priya              │      ₹2,500   │                 +₹7,500  │
-└────────────────────┴───────────────┴──────────────────────────┘
-```
+| Person | Paid | Spent (Share) | Net (+ collect / − owe) |
+|--------|-----:|--------------:|-----------------------:|
+| Rahul | ₹0 | ₹2,500 | −₹2,500 |
+| Priya | ₹10,000 | ₹2,500 | +₹7,500 |
+| Amit | ₹0 | ₹2,500 | −₹2,500 |
+| Neha | ₹0 | ₹2,500 | −₹2,500 |
 
-**Duo example:** if only Person 2 pays a ₹1,000 hotel bill split between both, Person 1's row still shows **Spent ₹500** — their technical share of the expense — with a Net of **−₹500** (they owe), while Person 2 shows Spent ₹500, Net **+₹500**.
+**Duo example:** if Person 2 pays a ₹1,000 hotel bill split between both, the summary shows **Spent ₹500** for each person. Person 1's net is **−₹500** and Person 2's net is **+₹500**. The generated expense-row columns show those signed nets, not the ₹500 shares.
 
 ### 3️⃣ Send Reports
-Gated behind the **All Expenses Confirmed** checkbox. On confirmation it runs the exact settlement engine and shows:
+Available when `Setup!B6` (**Setup Confirmed?**) is checked. Use **Confirm All Expenses** to refresh the report after reviewing expenses. It shows:
 
 * **Personal Balances Summary** — per-person Total Paid, Total Share, Net Balance, and email delivery status.
 * **Simplified Settlement Plan** — the minimum set of "X pays Y ₹amount" transactions that settles the whole group.
@@ -152,6 +164,15 @@ Gated behind the **All Expenses Confirmed** checkbox. On confirmation it runs th
 ---
 
 ## ⚙️ How It Works
+
+### Supported inputs & delivery
+
+- Supports **2–15 participants** and **500 expense rows**, starting at row 2. Rows after 501 are not included in calculations.
+- Enter positive amounts with up to two decimal places. Empty/incomplete rows and non-positive or non-numeric amounts are ignored; refunds and negative expenses are not supported.
+- Names match without case sensitivity or surrounding spaces. Duplicate subgroup names count once. Unknown subgroup names are ignored if a valid name remains; a split with no valid names blocks settlement.
+- The currency field changes the displayed symbol only; it does not convert amounts between currencies.
+- Sending reports is manual. Missing or invalid email addresses are skipped. Running the send action again sends another email to every valid address, including participants already marked **Sent**.
+- PDF conversion and email sending use your Google account's [Apps Script quotas](https://developers.google.com/apps-script/guides/services/quotas).
 
 ### Equal & Partial Splits
 * **"All" or blank Split Among:** cost splits equally across the whole roster.
@@ -173,10 +194,10 @@ The **Explanation** column beside each payment uses this template: “[Person A]
 The exact solver uses `O(n × 2^n)` time and `O(2^n)` memory, with at most 32,768 subsets for 15 people. It blocks invalid balances, unsafe integer totals, and groups above the supported limit. It never substitutes an approximate plan. See the [design and decision log](docs/plans/optimal-settlements.md).
 
 ### Performance Design
-* One batched read + two batched writes per edit — no per-cell API calls in the hot path.
+* Expense inputs are read as a range and calculated in memory; participant results and summary rows are written in batches.
 * Structural rebuilds (headers, dropdowns, validations) happen **only** on Setup/roster changes, never while typing expenses.
 * The Send Reports sheet rebuilds only on confirm toggles and while confirmed.
-* UI dialogs degrade gracefully (alert → toast → log), so mobile and trigger contexts never crash.
+* UI messages fall back from alerts to toasts or logs when dialogs are unavailable.
 
 ---
 
@@ -184,16 +205,43 @@ The exact solver uses `O(n × 2^n)` time and `O(2^n)` memory, with at most 32,76
 
 | Menu Item | Action |
 |-----------|--------|
-| `1. Initialize / Reset Tracker` | Builds all sheets, dropdowns, and formatting from scratch |
-| `2. Recalculate Expenses & Settlements` | Forces a full recalculation |
+| `1. Initialize / Reset Tracker` | Clears and rebuilds the three tracker sheets |
+| `2. Recalculate Live Expenses` | Recalculates expense nets and live summary; refreshes reports when confirmed |
+| `Confirm / Update Setup` | Validates the roster, rebuilds generated columns, and confirms setup |
 | `Confirm All Expenses` | Publishes balances + settlement plan (assignable to a drawing button) |
 | `Re-open for Editing (Unconfirm)` | Withdraws the report view |
 | `3. Send PDF Reports via Email` | Emails personalized PDF statements to roster emails |
 | `Test Email Permission` | Sends a test mail to verify the send-mail authorization |
-| `Fix Expenses Sheet Formatting` | One-time cleanup of legacy formatting/validation |
-| `Diagnose` | Reports the health of every moving part |
+| `Diagnose Settlement Data` | Shows roster, ledger errors, balance checks, and settlement rows |
 
-> **Mobile users:** menus don't exist in the Sheets app — use the `Setup!B6` checkbox; everything else is automatic.
+> **Mobile users:** use `Setup!B6` or `Setup!B7` for confirmation. Email sending uses the desktop menu or the `sendPdfReports()` function in Apps Script.
+
+---
+
+## Local Development with clasp
+
+Use Node.js 22+ and the [Google clasp CLI](https://github.com/google/clasp). There is no package manifest, build step, or local server.
+
+```sh
+npm install -g @google/clasp
+clasp login
+```
+
+Enable the **Google Apps Script API** in [Apps Script user settings](https://script.google.com/home/usersettings). Create a development spreadsheet and open its bound script through **Extensions → Apps Script**. Copy its **Script ID** from **Project Settings** into the `scriptId` field of this checkout's `.clasp.json` before pushing, so uploads target your own development sheet.
+
+Run these commands from the repository root:
+
+```sh
+node --check Code.js
+node --test
+clasp status
+clasp push
+clasp open-script
+```
+
+The first commands check syntax and run local tests. `clasp status` lists upload files; `clasp push` uploads to the configured project; `clasp open-script` opens its editor. The upload should contain `Code.js` and `appsscript.json`; `.claspignore` excludes tests and preview artifacts. Clasp authentication authorizes uploads; spreadsheet and email permissions are granted separately when running the script.
+
+Run `setup()` only when initializing a blank development spreadsheet. For subsequent code updates, reload the sheet and use **2. Recalculate Live Expenses** or **Confirm All Expenses** as needed. Edit-trigger behavior, actual PDF conversion, and email delivery require checks in Google Sheets.
 
 ---
 
@@ -235,7 +283,7 @@ Generate pay, receive, settled, and long-statement HTML previews without sending
 node tests/preview-pdf.cjs
 ```
 
-Open the files in `tests/previews/` and print to PDF using A4 paper with browser headers and footers disabled. Generated previews are Git-ignored and excluded from clasp uploads.
+Open the files in `tests/previews/` and print to PDF using A4 paper with browser headers and footers disabled. These files are excluded from clasp uploads. The repository includes sample preview artifacts; running the command regenerates HTML, not the committed PDF or PNG files.
 
 ---
 
@@ -258,11 +306,17 @@ See [`tests/README.md`](tests/README.md) for focused commands and limitations. `
 | Symptom | Fix |
 |---------|-----|
 | Emails not sending | Run **Test Email Permission** and approve "Send email as you"; mails are sent from the account running the script |
-| Person columns blank | Ensure the row has Amount + Paid By; names in Split Among must match roster spelling |
-| Stray checkboxes / colors from an old version | Run **Fix Expenses Sheet Formatting** once (clears all expense rows) |
-| Something feels off | Run **Diagnose** and read the reported state |
+| Expense rows missing from calculations | Check positive Amount + Paid By, valid names, and that the row is between 2 and 501 |
+| Reports say unconfirmed or show old results | Reconfirm setup, then select **Confirm All Expenses** to rebuild the report |
+| Unknown payer after changing the roster | Update old names in **Paid By** and **Split Among**, then reconfirm |
+| Menu missing after a code update | Reload the spreadsheet; run `onOpen()` in Apps Script if necessary |
+| Formatting or generated columns look wrong | Use **Confirm / Update Setup**, then **2. Recalculate Live Expenses** |
+| Quota or authorization error | Read the Apps Script execution error, check account quotas, and authorize the required service |
+| Something feels off | Run **Diagnose Settlement Data** and read the reported ledger errors |
 
 ---
+
+<a id="contributing"></a>
 
 ## 🤝 Contributing
 
@@ -274,8 +328,10 @@ Contributions are welcome! Please feel free to open an issue or submit a pull re
 4. Push to the Branch (`git push origin feature/AmazingFeature`).
 5. Open a Pull Request.
 
+Include a short behavior summary and validation results. Add screenshots when changing sheet layouts or PDF output; verify financial changes with `node --test`.
+
 ---
 
 ## 📜 License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License. See [LICENSE](LICENSE) for more information.

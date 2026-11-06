@@ -30,7 +30,7 @@ No dependencies, Google credentials, live spreadsheets, or email access are requ
 
 Run `node tests/preview-pdf.cjs` to generate receive, pay, settled, and 80-expense HTML samples in `tests/previews/`. The samples call the production report builder with fictional ledger data; they never send email. Open the HTML files in a browser, then print to A4 PDF with browser headers and footers disabled.
 
-Inspect single-page spacing, currency glyphs, long descriptions, repeated table headings, final totals, and page boundaries. Local Chromium rendering is a visual check, not a substitute for verifying Apps Script's actual HTML-to-PDF converter. Preview artifacts are ignored by Git and clasp.
+Inspect single-page spacing, currency glyphs, long descriptions, repeated table headings, final totals, and page boundaries. Local Chromium rendering is a visual check, not a substitute for verifying Apps Script's actual HTML-to-PDF converter. The repository includes sample preview artifacts; `.claspignore` excludes them from Apps Script uploads. The command regenerates HTML only; refresh PDF and PNG samples separately after design changes.
 
 ## Findings
 
