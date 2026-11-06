@@ -63,7 +63,7 @@ describe('Ledger calculations from spreadsheet input', () => {
     assert.deepEqual([...ledger.spent.values()], [50000, 50000]);
     assert.deepEqual([...ledger.balances.values()], [-50000, 50000]);
     assertLedgerConservesMoney(ledger);
-    assertSettles(ledger, app.calculateGreedySettlements_(ledger));
+    assertSettles(ledger, app.calculateOptimalSettlements_(ledger));
   });
 
   it('calculates multiple payers, subgroups, and a payer outside their own split', () => {
@@ -78,7 +78,7 @@ describe('Ledger calculations from spreadsheet input', () => {
     assert.deepEqual([...ledger.spent.values()], [5500, 8500, 7000]);
     assert.deepEqual([...ledger.balances.values()], [6500, -2500, -4000]);
     assertLedgerConservesMoney(ledger);
-    assertSettles(ledger, app.calculateGreedySettlements_(ledger));
+    assertSettles(ledger, app.calculateOptimalSettlements_(ledger));
   });
 
   it('gives the rounding cent to the lowest included ID, even when Cara pays', () => {
@@ -119,7 +119,7 @@ describe('Ledger calculations from spreadsheet input', () => {
     const { app } = loadAppsScript({ expenses: [getMockExpense({ amount: 25, split: 'Alice' })] });
     const ledger = app.buildLedger_();
     assert.deepEqual([...ledger.balances.values()], [0, 0, 0]);
-    assert.equal(app.calculateGreedySettlements_(ledger).length, 0);
+    assert.equal(app.calculateOptimalSettlements_(ledger).length, 0);
     assertLedgerConservesMoney(ledger);
   });
 
@@ -151,7 +151,7 @@ describe('Ledger calculations from spreadsheet input', () => {
       assert.equal(ledger.expenses.length, 0);
       assert.equal(ledger.rowRecords.get(2), null);
       assert.match(ledger.errors[0], message);
-      assert.throws(() => app.calculateGreedySettlements_(ledger), message);
+      assert.throws(() => app.calculateOptimalSettlements_(ledger), message);
     });
   }
 
@@ -175,7 +175,7 @@ describe('Ledger calculations from spreadsheet input', () => {
       assert.equal(ledger.totalMinor, 0);
       assert.equal(ledger.expenses.length, 0);
       assertLedgerConservesMoney(ledger);
-      assertSettles(ledger, app.calculateGreedySettlements_(ledger));
+      assertSettles(ledger, app.calculateOptimalSettlements_(ledger));
     });
   }
 
@@ -195,7 +195,7 @@ describe('Ledger calculations from spreadsheet input', () => {
       const ledger = app.buildLedger_();
       assert.equal(ledger.totalMinor, expectedTotal, `Trip ${trip}`);
       assertLedgerConservesMoney(ledger);
-      assertSettles(ledger, app.calculateGreedySettlements_(ledger));
+      assertSettles(ledger, app.calculateOptimalSettlements_(ledger));
     }
   });
 });

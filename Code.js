@@ -1327,6 +1327,164 @@ function writeLiveSummary_(sheet, col, ledger, format) {
    SETTLEMENT CALCULATION
    ========================================================= */
 
+/**
+ * Finds a globally minimum transfer plan for at most MAX_PARTICIPANTS people.
+ * Each connected settlement group must sum to zero. Maximizing the number of
+ * disjoint zero-sum groups minimizes transfers: nonzero people minus groups.
+ */
+function calculateOptimalSettlements_(ledger) {
+  if (ledger.errors.length) {
+    throw new Error(ledger.errors.join(' | '));
+  }
+
+  if (ledger.roster.length > MAX_PARTICIPANTS) {
+    throw new Error(`Exact settlement supports at most ${MAX_PARTICIPANTS} participants.`);
+  }
+
+  if (ledger.balances.size !== ledger.roster.length) {
+    throw new Error('Every roster participant must have exactly one balance.');
+  }
+
+  const ids = new Set();
+  let creditTotal = 0;
+  let debtTotal = 0;
+
+  ledger.roster.forEach(person => {
+    if (!Number.isSafeInteger(person.id) || person.id <= 0 || ids.has(person.id) ||
+        typeof person.name !== 'string' || !person.name.trim()) {
+      throw new Error('Invalid or duplicate settlement participant.');
+    }
+
+    ids.add(person.id);
+
+    if (!ledger.balances.has(person.id)) {
+      throw new Error(`Missing balance for roster participant ${person.id}.`);
+    }
+
+    const net = ledger.balances.get(person.id);
+
+    if (!Number.isSafeInteger(net)) {
+      throw new Error('Settlement balances must be safe integer minor units.');
+    }
+
+    creditTotal += Math.max(net, 0);
+    debtTotal += Math.max(-net, 0);
+
+    if (!Number.isSafeInteger(creditTotal) || !Number.isSafeInteger(debtTotal)) {
+      throw new Error('Settlement totals exceed the safe integer range.');
+    }
+  });
+
+  if (creditTotal !== debtTotal) {
+    throw new Error(`Ledger is not balanced: ${creditTotal - debtTotal} paise remaining.`);
+  }
+
+  const people = ledger.roster
+    .filter(person => ledger.balances.get(person.id) !== 0)
+    .sort((a, b) => a.id - b.id);
+
+  if (!people.length) return [];
+
+  const values = people.map(person => ledger.balances.get(person.id));
+  const stateCount = 1 << people.length;
+  const sums = new Float64Array(stateCount);
+  const groupCounts = new Uint8Array(stateCount);
+  const choices = new Uint16Array(stateCount);
+
+  // An ordering's zero-sum prefixes delimit independent balanced groups.
+  // For each subset, keep the best prefix count after removing one last person.
+  // A zero-sum subset completes one more group. Work: O(n * 2^n), space: O(2^n).
+  for (let mask = 1; mask < stateCount; mask++) {
+    const firstBit = mask & -mask;
+    sums[mask] = sums[mask ^ firstBit] + values[31 - Math.clz32(firstBit)];
+
+    let best = -1;
+
+    for (let bits = mask; bits; bits &= bits - 1) {
+      const bit = bits & -bits;
+      const candidate = groupCounts[mask ^ bit];
+
+      // Ascending IDs and keeping the first tied choice make plans repeatable.
+      if (candidate > best) {
+        best = candidate;
+        choices[mask] = bit;
+      }
+    }
+
+    groupCounts[mask] = best + (sums[mask] === 0 ? 1 : 0);
+  }
+
+  const order = [];
+
+  for (let mask = stateCount - 1; mask; mask ^= choices[mask]) {
+    order.push(31 - Math.clz32(choices[mask]));
+  }
+
+  order.reverse();
+
+  const groups = [];
+  let members = [];
+  let groupSum = 0;
+
+  order.forEach(index => {
+    members.push(people[index]);
+    groupSum += values[index];
+
+    if (groupSum === 0) {
+      groups.push(members.sort((a, b) => a.id - b.id));
+      members = [];
+    }
+  });
+
+  if (members.length || groups.length !== groupCounts[stateCount - 1]) {
+    throw new Error('Could not reconstruct the minimum settlement groups.');
+  }
+
+  groups.sort((a, b) => a[0].id - b[0].id);
+
+  const settlements = [];
+
+  groups.forEach(roster => {
+    const balances = new Map(roster.map(person => [person.id, ledger.balances.get(person.id)]));
+
+    // No optimal group can split further. Greedy clears that group in k - 1
+    // transfers, and independently verifies every member's balance is cleared.
+    settlements.push(...calculateGreedySettlements_({ roster, balances, errors: [] }));
+  });
+
+  const minimumCount = people.length - groups.length;
+
+  if (settlements.length !== minimumCount) {
+    throw new Error('Settlement count does not match the proven minimum.');
+  }
+
+  return settlements;
+}
+
+function buildSettlementExplanations_(ledger, settlements, currency) {
+  const remaining = new Map(ledger.balances);
+  const money = minor => `${minor < 0 ? '-' : ''}${currency}${fromMinor_(Math.abs(minor)).toFixed(2)}`;
+
+  return settlements.map(settlement => {
+    const fromId = settlement.fromId;
+    const toId = settlement.toId;
+    const debtBefore = -remaining.get(fromId);
+    const creditBefore = remaining.get(toId);
+    const debtAfter = debtBefore - settlement.amountMinor;
+    const creditAfter = creditBefore - settlement.amountMinor;
+
+    remaining.set(fromId, -debtAfter);
+    remaining.set(toId, creditAfter);
+
+    return [
+      `${settlement.from}: paid ${money(ledger.paid.get(fromId))} − share ${money(ledger.spent.get(fromId))} = ${money(ledger.balances.get(fromId))} net (owes).`,
+      `${settlement.to}: paid ${money(ledger.paid.get(toId))} − share ${money(ledger.spent.get(toId))} = ${money(ledger.balances.get(toId))} net (collects).`,
+      `Before: ${settlement.from} owes ${money(debtBefore)}; ${settlement.to} needs ${money(creditBefore)}. Pay the smaller amount: ${money(settlement.amountMinor)}.`,
+      `After: ${settlement.from} owes ${money(debtAfter)}; ${settlement.to} needs ${money(creditAfter)}.`
+    ].join('\n');
+  });
+}
+
 function calculateGreedySettlements_(ledger) {
   if (ledger.errors.length) {
     throw new Error(ledger.errors.join(' | '));
@@ -1511,7 +1669,8 @@ function updateSendReportsSheet() {
   const roster = ledger.roster;
   const format = getCurrencyFormat_();
 
-  const requiredRows = Math.max(25, roster.length + 25);
+  // Clear the largest supported report footprint even after a roster shrinks.
+  const requiredRows = MAX_PARTICIPANTS + 25;
 
   if (sheet.getMaxRows() < requiredRows) {
     sheet.insertRowsAfter(
@@ -1621,9 +1780,11 @@ function updateSendReportsSheet() {
     .setFontColors(netFontColors);
 
   let settlements;
+  let explanations;
 
   try {
-    settlements = calculateGreedySettlements_(ledger);
+    settlements = calculateOptimalSettlements_(ledger);
+    explanations = buildSettlementExplanations_(ledger, settlements, getCurrencySymbol_());
   } catch (err) {
     sheet.getRange(roster.length + 5, 1, 1, 6)
       .merge()
@@ -1637,19 +1798,20 @@ function updateSendReportsSheet() {
 
   const startRow = roster.length + 5;
 
-  sheet.getRange(startRow, 1, 1, 4)
+  sheet.getRange(startRow, 1, 1, 5)
     .merge()
-    .setValue('SIMPLIFIED SETTLEMENT PLAN')
+    .setValue(`SIMPLIFIED SETTLEMENT PLAN — ${settlements.length} transfer${settlements.length === 1 ? '' : 's'} (minimum)`)
     .setBackground(COLOR.HEADER)
     .setFontColor('#FFFFFF')
     .setFontWeight('bold');
 
-  sheet.getRange(startRow + 1, 1, 1, 4)
+  sheet.getRange(startRow + 1, 1, 1, 5)
     .setValues([[
       'From (Debtor)',
       'To (Creditor)',
       'Amount',
-      'Instruction'
+      'Instruction',
+      'Explanation'
     ]])
     .setBackground(COLOR.HEADER_MID)
     .setFontColor('#FFFFFF')
@@ -1658,33 +1820,44 @@ function updateSendReportsSheet() {
   if (settlements.length) {
     const symbol = getCurrencySymbol_();
 
-    const rows = settlements.map(settlement => {
+    const rows = settlements.map((settlement, index) => {
       const amount = fromMinor_(settlement.amountMinor);
 
       return [
         settlement.from,
         settlement.to,
         amount,
-        `${settlement.from} pays ${settlement.to} ${symbol}${amount.toFixed(2)}`
+        `${settlement.from} pays ${settlement.to} ${symbol}${amount.toFixed(2)}`,
+        explanations[index]
       ];
     });
 
     sheet
-      .getRange(startRow + 2, 1, rows.length, 4)
+      .getRange(startRow + 2, 1, rows.length, 5)
       .setValues(rows);
 
     sheet
       .getRange(startRow + 2, 3, rows.length, 1)
       .setNumberFormat(format);
 
+    sheet.getRange(startRow + 2, 5, rows.length, 1)
+      .setWrap(true)
+      .setVerticalAlignment('top');
+
   } else {
-    sheet.getRange(startRow + 2, 1, 1, 4)
+    sheet.getRange(startRow + 2, 1, 1, 5)
       .merge()
       .setValue('All debts settled!')
       .setFontStyle('italic');
   }
 
-  sheet.autoResizeColumns(1, 6);
+  sheet.autoResizeColumns(1, 4);
+  sheet.autoResizeColumns(6, 1);
+  sheet.setColumnWidth(5, 480);
+
+  if (settlements.length) {
+    sheet.autoResizeRows(startRow + 2, settlements.length);
+  }
 }
 
 /* =========================================================
@@ -1756,7 +1929,7 @@ function sendPdfReports() {
   let settlements;
 
   try {
-    settlements = calculateGreedySettlements_(ledger);
+    settlements = calculateOptimalSettlements_(ledger);
   } catch (err) {
     safeAlert(`Cannot send reports: ${err.message}`);
     return;
@@ -2054,7 +2227,7 @@ function diagnose() {
   lines.push(`Net balance sum: ${netSum} paise`);
 
   try {
-    const settlements = calculateGreedySettlements_(ledger);
+    const settlements = calculateOptimalSettlements_(ledger);
 
     lines.push(`Settlement rows: ${settlements.length}`);
 

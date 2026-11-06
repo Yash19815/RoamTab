@@ -3,7 +3,7 @@
 # ✈️ Dynamic Group Travel Expense Splitter
 
 **A zero-dependency, open-source Splitwise alternative built directly inside Google Sheets.**
-Instant per-person split calculations, a live group summary panel, greedy debt minimization, and 1-click personalized PDF email reports.
+Instant per-person split calculations, a live group summary panel, exact minimum-transfer settlements, and 1-click personalized PDF email reports.
 
 [![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-4285F4?style=for-the-badge&logo=google&logoColor=white)](#)
 [![Google Sheets](https://img.shields.io/badge/Google%20Sheets-34A853?style=for-the-badge&logo=googlesheets&logoColor=white)](#)
@@ -34,7 +34,7 @@ Instant per-person split calculations, a live group summary panel, greedy debt m
 * **100% Free & Self-Hosted:** No subscription limits, item limits, or ads. Your trip data stays inside your Google Drive.
 * **Instant Live Calculations:** Per-person split columns compute the moment you type an expense — no confirm step, no waiting, just like a native spreadsheet formula.
 * **Live Summary Panel:** A persistent dashboard beside your entries always shows the **Total Spent (Everyone)**, each person's **Spent (Share)** — what they technically consumed even if they paid nothing — and their **Net Balance** (+ collect / − owe).
-* **Greedy Settlement Engine:** On confirmation, generates a plan that clears all group debts. Greedy matching does not guarantee the fewest possible transactions.
+* **Exact Settlement Engine:** On confirmation, uses subset dynamic programming to find the fewest possible transfers for up to 15 people. Every settlement row explains the payment calculation and remaining balances.
 * **Automated PDF Email Statements:** Generates clean, personalized HTML/PDF expense reports — each person receives only the expenses that involve them — dispatched via Gmail in one click.
 * **Dynamic Roster Scaling:** Scale your group seamlessly from 2 to 15 people — the grid, dropdowns, person columns, and summary panel auto-adjust on the fly.
 * **Mobile-First Workflow:** Full functionality through checkboxes and automatic triggers; no dependency on desktop-only custom menus.
@@ -136,10 +136,10 @@ Enter expenses in columns **A–E**; everything else is computed live:
 **Duo example:** if only Person 2 pays a ₹1,000 hotel bill split between both, Person 1's row still shows **Spent ₹500** — their technical share of the expense — with a Net of **−₹500** (they owe), while Person 2 shows Spent ₹500, Net **+₹500**.
 
 ### 3️⃣ Send Reports
-Gated behind the **All Expenses Confirmed** checkbox. On confirmation it runs the greedy settlement engine and shows:
+Gated behind the **All Expenses Confirmed** checkbox. On confirmation it runs the exact settlement engine and shows:
 
 * **Personal Balances Summary** — per-person Total Paid, Total Share, Net Balance, and email delivery status.
-* **Simplified Settlement Plan** — a greedy set of "X pays Y ₹amount" transactions that settles the whole group.
+* **Simplified Settlement Plan** — the minimum set of "X pays Y ₹amount" transactions that settles the whole group.
 
 ---
 
@@ -150,16 +150,19 @@ Gated behind the **All Expenses Confirmed** checkbox. On confirmation it runs th
 * **Comma-separated names** (`Rahul, Neha`): cost splits only within that subgroup.
 * **Remainder handling:** leftover whole paisa/cents are distributed one at a time by ascending participant ID among the included people. Shares add up to the original amount, and group balances reconcile to zero.
 
-### Settlement Engine (Greedy)
-Instead of N × (N−1) individual repayments, net debtors and creditors are matched largest-first:
+### Settlement Engine (Exact Minimum Transfers)
+The solver finds the largest number of independent groups whose net balances sum to zero. It then settles each group separately. If there are `n` people with nonzero balances and `g` groups, the minimum number of transfers is `n - g`.
 
 ```
-[ Debtors (sorted desc) ]  ←———→  [ Creditors (sorted desc) ]
-            |                                 |
-            +——— settle min(owe, owed) ———→  repeat until zero
+Net balances → optimal independent groups → payments within each group
+             → verify minimum transfer count and zero remaining balances
 ```
 
-The plan clears every balance but may use more transfers than an exact optimizer. For debts of ₹8, ₹7, and ₹5 with credits of ₹12 and ₹8, the current algorithm uses four transfers. Three suffice: ₹8 to the ₹8 creditor, and ₹7 plus ₹5 to the ₹12 creditor. Automated tests reproduce this case from expense rows.
+For debts of ₹8, ₹7, and ₹5 with credits of ₹12 and ₹8, the solver finds two groups: `(−₹8, +₹8)` and `(−₹7, −₹5, +₹12)`. It generates three transfers instead of the four produced by ungrouped greedy matching. The existing greedy helper is used only inside optimal groups, where it produces the required minimum.
+
+The **Explanation** column beside each payment shows both people's paid-minus-share net balances, the outstanding debt and credit before payment, why the smaller outstanding amount is paid, and what remains afterward. Payment order is deterministic, and PDF payment instructions use the same plan.
+
+The exact solver uses `O(n × 2^n)` time and `O(2^n)` memory, with at most 32,768 subsets for 15 people. It blocks invalid balances, unsafe integer totals, and groups above the supported limit. It never substitutes an approximate plan. See the [design and decision log](docs/plans/optimal-settlements.md).
 
 ### Performance Design
 * One batched read + two batched writes per edit — no per-cell API calls in the hot path.
@@ -196,8 +199,10 @@ travel-expense-excel/
 ├── .claspignore              # Excludes local tests from uploads
 ├── AGENTS.md                 # Contributor guidelines
 ├── README.md                 # Project documentation
+├── docs/plans/               # Settlement design and decision log
 └── tests/
     ├── calculations.test.cjs # Money, ledger, and sheet output tests
+    ├── optimal-settlements.test.cjs # Exact minima, explanations, and benchmarks
     ├── settlements.test.cjs  # Settlement validity and minimum-count checks
     ├── helpers/              # Spreadsheet boundary mocks and exact test oracle
     └── README.md             # Test scope and known limitations
@@ -213,7 +218,7 @@ Use Node.js 22 or newer. No npm dependencies or Google credentials are needed:
 node --test
 ```
 
-The tests execute the real `Code.js` in an isolated VM with an in-memory spreadsheet boundary. They cover exact totals, per-person shares and balances, remainder allocation, subgroup splits, invalid rows, generated spreadsheet values, and debt clearance. Seeded scenarios exercise 2–15 participants and 500 expense rows. A small exact oracle demonstrates that greedy settlements are not always minimal.
+The tests execute the real `Code.js` in an isolated VM with an in-memory spreadsheet boundary. They cover exact totals, per-person shares and balances, remainder allocation, subgroup splits, invalid rows, generated spreadsheet values, and debt clearance. Exact minimum counts are checked against an independent exhaustive oracle on 625 small balanced cases and 200 seeded groups. Additional cases exercise 15 participants, 500 expense rows, explanation text, roster changes, and consistent spreadsheet/PDF payment instructions. The suite also reports a local 15-person solver benchmark.
 
 See [`tests/README.md`](tests/README.md) for focused commands and limitations. `.claspignore` keeps local tests out of Apps Script uploads. Actual Google Sheets triggers, authorization, PDF generation, and email delivery still require manual checks.
 

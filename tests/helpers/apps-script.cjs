@@ -35,7 +35,7 @@ function getMockLedger(balances, overrides = {}) {
 }
 
 // Only the spreadsheet boundary is simulated. Calculations run from Code.js unchanged.
-function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26 } = {}) {
+function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26, maxRows = 1000 } = {}) {
   const cells = new Map();
   const reads = [];
   rows.forEach((row, rowIndex) => row.forEach((value, colIndex) => {
@@ -47,13 +47,23 @@ function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26 } = {}
     cell,
     getLastRow: () => lastRow,
     getMaxColumns: () => maxColumns,
+    getMaxRows: () => maxRows,
     insertColumnsAfter(after, count) { maxColumns += count; },
+    insertRowsAfter(after, count) { maxRows += count; },
+    autoResizeColumns() { return sheet; },
+    autoResizeRows() { return sheet; },
+    setColumnWidth() { return sheet; },
     getRange(row, col, height = 1, width = 1) {
       if (typeof row === 'string') {
-        const match = /^([A-Z]+)(\d+)$/.exec(row);
+        const match = /^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(row);
         assert.ok(match, `Unsupported cell address: ${row}`);
-        col = [...match[1]].reduce((value, letter) => value * 26 + letter.charCodeAt(0) - 64, 0);
+        const columnNumber = text => [...text].reduce((value, letter) => value * 26 + letter.charCodeAt(0) - 64, 0);
+        col = columnNumber(match[1]);
         row = Number(match[2]);
+        if (match[3]) {
+          width = columnNumber(match[3]) - col + 1;
+          height = Number(match[4]) - row + 1;
+        }
       }
       const range = {
         getValue: () => cell(row, col),
@@ -84,7 +94,8 @@ function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26 } = {}
       for (const method of [
         'breakApart', 'clearFormat', 'merge', 'setBackground', 'setFontColor',
         'setFontWeight', 'setHorizontalAlignment', 'setNumberFormat',
-        'setBackgrounds', 'setFontColors', 'setFontStyle', 'setFontSize', 'setWrap'
+        'setBackgrounds', 'setFontColors', 'setFontStyle', 'setFontSize', 'setWrap',
+        'clearDataValidations', 'setVerticalAlignment'
       ]) range[method] = () => range;
       return range;
     }
@@ -106,10 +117,12 @@ function loadAppsScript({
   const sheet = getMockSheet([['Date', 'Description', 'Amount', 'Paid By', 'Split Among'], ...expenses], {
     lastRow: lastRow ?? expenses.length + 1
   });
+  const reports = getMockSheet([], { maxColumns: 6 });
   const spreadsheet = {
     getSheetByName(name) {
       if (name === 'Setup') return missingSetup ? null : setup;
       if (name === 'Expenses') return missingExpenses ? null : sheet;
+      if (name === 'Send Reports') return reports;
       throw new Error(`Unexpected sheet access: ${name}`);
     },
     getSpreadsheetTimeZone: () => 'Asia/Kolkata'
@@ -120,7 +133,7 @@ function loadAppsScript({
     Utilities: { formatDate: date => date.toISOString().slice(0, 10) }
   });
   vm.runInContext(source, context, { filename: 'Code.js', timeout: 1000 });
-  return { app: context, sheet, setup };
+  return { app: context, sheet, setup, reports };
 }
 
 // Convert VM arrays/objects into the test realm for strict structural assertions.

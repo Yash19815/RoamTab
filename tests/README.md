@@ -6,6 +6,7 @@ Run from the repository root with Node.js 22 or newer:
 node --test
 node --test tests/calculations.test.cjs
 node --test tests/settlements.test.cjs
+node --test tests/optimal-settlements.test.cjs
 ```
 
 No dependencies, Google credentials, live spreadsheets, or email access are required.
@@ -19,12 +20,15 @@ No dependencies, Google credentials, live spreadsheets, or email access are requ
 - Verify signed expense cells and live summary values written by `recalculateAll()`.
 - Verify settlements contain positive integer amounts, use valid debtor/creditor directions, clear each balance exactly, and preserve input balances.
 - Exercise 100 seeded trips, 1,000 seeded balance groups, and 100 small groups compared with an independent exact oracle.
+- Check the production exact solver against the independent exhaustive oracle for 625 balanced five-person cases and 200 seeded groups of up to 10 people.
+- Verify known minimum counts with 15 people and report timing for 20 maximum-size local cases without flaky runtime assertions.
+- Verify explanation text, exact cents and configured currency, report cleanup after roster changes or unconfirmation, and identical sheet/PDF payment instructions.
 
 ## Findings
 
 The tested positive amounts with up to two decimal places preserve money and produce settlement plans that clear every balance. This is regression evidence, not a proof for every possible input.
 
-Greedy matching **does not guarantee the minimum number of transfers**. The regression case uses these net balances:
+Ungrouped greedy matching **does not guarantee the minimum number of transfers**. The production solver now finds the exact minimum using subset DP. The regression case uses these net balances:
 
 | Person | Net balance |
 | --- | ---: |
@@ -34,12 +38,12 @@ Greedy matching **does not guarantee the minimum number of transfers**. The regr
 | Person 4 | +₹12 |
 | Person 5 | +₹8 |
 
-The current algorithm generates four transfers. A minimum plan uses three: Alice pays Person 5 ₹8; Bob and Cara pay Person 4 ₹7 and ₹5. The suite checks both plans and recreates the balances from expense rows. This limitation test intentionally passes when it reproduces current behavior; green tests do not mean greedy is globally optimal.
+The greedy helper alone generates four transfers. The production exact solver uses three: Alice pays Person 5 ₹8; Bob and Cara pay Person 4 ₹7 and ₹5. The suite checks both algorithms and recreates the balances from expense rows. Greedy-only tests preserve the baseline limitation; exact-solver tests require the globally minimum count.
 
 Remainders go to included participants in ascending ID order, not necessarily to the payer. Unknown subgroup names are currently ignored if at least one valid name remains; a test documents this behavior.
 
 ## Boundaries
 
-The exact oracle partitions balances into disjoint zero-sum groups. It is exponential and limited to 10 nonzero balances; production still uses the existing greedy function unchanged. No automated coverage percentage is enforced.
+The test oracle exhaustively partitions balances into zero-sum groups and is limited to 10 nonzero balances. Production instead uses an `O(n × 2^n)` prefix DP for up to 15 people, reconstructs the optimal groups, and uses the greedy helper only within those groups. It rejects invalid balances and aggregate magnitudes outside JavaScript's safe integer range. No automated coverage percentage is enforced.
 
-These tests do not validate Google Sheets trigger delivery, real formatting, authorization, PDF generation, or email sending. They do not establish support for negative expenses, arbitrary-precision amounts, or amounts beyond JavaScript's safe integer range.
+These tests do not validate Google Sheets trigger delivery, real formatting, authorization, PDF conversion, or actual email delivery. PDF instruction HTML and email requests are inspected through mocked service boundaries. Local benchmark timings do not establish Apps Script execution time. The suite does not establish support for negative expenses, arbitrary-precision amounts, or amounts beyond JavaScript's safe integer range.
