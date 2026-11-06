@@ -8,6 +8,8 @@ node --test tests/calculations.test.cjs
 node --test tests/settlements.test.cjs
 node --test tests/optimal-settlements.test.cjs
 node --test tests/pdf-report.test.cjs
+node --test tests/trip-records.test.cjs
+node --test tests/trip-json-dialog.test.cjs
 ```
 
 No dependencies, Google credentials, live spreadsheets, or email access are required.
@@ -26,6 +28,7 @@ No dependencies, Google credentials, live spreadsheets, or email access are requ
 - Verify the simple explanation template with outstanding debt, outstanding credit, and the smaller payment amount; check exact cents, configured currency, report cleanup after roster changes or unconfirmation, and identical sheet/PDF payment instructions.
 - Check PDF statement pay/receive/settled states, payment-first reading order, personal expense filtering, escaped user content, and complete 500-row output.
 - Exercise real menu/B6/B7 setup confirmation, pasted roster growth, count shrink/regrowth without name or email loss, dynamic expense headers, legacy summary cleanup, and an always-live Send Reports!H:K summary.
+- Exercise trip saves from the menu and E6, repeated archive updates, JSON parts beyond one cell, 15-person/500-expense round trips, real dates, incomplete rows, inactive roster entries, confirmation restoration, save-before-load/reset behavior, import validation, formula-like text, and selected-record deletion with confirmation.
 
 ## Visual PDF Previews
 
@@ -56,3 +59,5 @@ Remainders go to included participants in ascending ID order, not necessarily to
 The test oracle exhaustively partitions balances into zero-sum groups and is limited to 10 nonzero balances. Production instead uses an `O(n × 2^n)` prefix DP for up to 15 people, reconstructs the optimal groups, and uses the greedy helper only within those groups. It rejects invalid balances and aggregate magnitudes outside JavaScript's safe integer range. No automated coverage percentage is enforced.
 
 These tests do not validate Google Sheets trigger delivery, real formatting, authorization, PDF conversion, or actual email delivery. PDF instruction HTML and email requests are inspected through mocked service boundaries. Local benchmark timings do not establish Apps Script execution time. The suite does not establish support for negative expenses, arbitrary-precision amounts, or amounts beyond JavaScript's safe integer range.
+
+Archive tests simulate spreadsheet writes, locks, confirmation dialogs, and HTML template preparation. Dialog tests execute the real HTML script with simulated DOM and Apps Script boundaries, checking Blob contents, upload confirmation, file reading, and success/error handling. Verify browser download/file import and actual checkbox trigger delivery in a disposable spreadsheet. Load a saved trip after New Trip and compare dates, roster, raw expense rows, and balances. Confirm cancelled New Trip/Delete actions preserve data and saved Records survive initialization. The JSON schema restores input values, not formulas or historical email delivery statuses.

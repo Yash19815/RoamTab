@@ -2,8 +2,9 @@
  * DYNAMIC GROUP TRAVEL EXPENSE SPLITTER — COMPLETE SCRIPT
  *
  * IMPORTANT
- * - setup() / “Initialize / Reset Tracker” is the ONLY destructive action.
- * - All other actions preserve entered expense data in Expenses columns A:E.
+ * - setup() / “Initialize / Reset Tracker” destructively resets active inputs.
+ * - New Trip and Load Trip save current inputs before replacing Expenses A:E.
+ * - Delete Saved Trip removes only the selected archive after confirmation.
  * - Money is calculated in integer paise/cents to avoid floating-point issues.
  *
  * SETUP FLOW
@@ -28,6 +29,9 @@
 const SHEET_SETUP = 'Setup';
 const SHEET_EXPENSES = 'Expenses';
 const SHEET_REPORTS = 'Send Reports';
+const SHEET_RECORDS = 'Records';
+const TRIP_SCHEMA_VERSION = 1;
+const TRIP_JSON_CHUNK_SIZE = 40000;
 
 const COL = {
   DATE: 1,
@@ -51,6 +55,8 @@ const SETUP_CURRENCY_CELL = 'B4';
 const SETUP_STATUS_CELL = 'B5';
 const SETUP_CONFIRM_CELL = 'B6';
 const SETUP_UPDATE_CELL = 'B7';
+const SETUP_SAVE_CELL = 'E6';
+const SETUP_TRIP_ID_CELL = 'E3';
 
 const ROSTER_HEADER_ROW = 8;
 const ROSTER_START_ROW = 9;
@@ -93,6 +99,8 @@ function safeAlert(message) {
 }
 
 function onOpen() {
+  // Add archive controls to existing trackers without resetting their inputs.
+  ensureTripControls_();
   SpreadsheetApp.getUi()
     .createMenu('Expense Splitter')
     .addItem('1. Initialize / Reset Tracker', 'setup')
@@ -101,6 +109,13 @@ function onOpen() {
     .addItem('Confirm / Update Setup', 'confirmSetupFromMenu')
     .addItem('Confirm All Expenses', 'confirmAllExpenses')
     .addItem('Re-open for Editing (Unconfirm)', 'unconfirmExpenses')
+    .addSeparator()
+    .addItem('Save Trip', 'saveTrip')
+    .addItem('Load Selected Trip', 'loadSelectedTrip')
+    .addItem('Download Selected Trip JSON', 'downloadSelectedTrip')
+    .addItem('Import Trip JSON', 'showImportTrip')
+    .addItem('Delete Selected Trip', 'deleteSelectedTrip')
+    .addItem('New Trip', 'newTrip')
     .addSeparator()
     .addItem('3. Send PDF Reports via Email', 'sendPdfReports')
     .addItem('Test Email Permission', 'testEmailPermission')
@@ -114,10 +129,14 @@ function onOpen() {
    ========================================================= */
 
 /**
- * ONLY destructive operation.
+ * Explicit destructive reset operation; saved Records remain intact.
  * Clears Setup, Expenses, and Send Reports sheets and rebuilds all initial UI.
  */
 function setup() {
+  initializeTracker_(false);
+}
+
+function initializeTracker_(blank) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   const setupSheet = ss.getSheetByName(SHEET_SETUP) ||
@@ -141,8 +160,8 @@ function setup() {
     .setFontWeight('bold');
 
   setupSheet.getRange('A2:B7').setValues([
-    ['Trip Name / Destination:', 'Goa Vacation 2026'],
-    ['Number of People:', 4],
+    ['Trip Name / Destination:', blank ? '' : 'Goa Vacation 2026'],
+    ['Number of People:', blank ? MIN_PARTICIPANTS : 4],
     ['Currency Symbol:', '₹'],
     ['Setup Status:', 'Checking...'],
     ['Setup Confirmed?', false],
@@ -191,12 +210,11 @@ function setup() {
     .setFontColor('#FFFFFF')
     .setFontWeight('bold');
 
-  setupSheet.getRange(ROSTER_START_ROW, 1, 4, 3).setValues([
-    [1, 'Rahul', ''],
-    [2, 'Priya', ''],
-    [3, 'Amit', ''],
-    [4, 'Neha', '']
-  ]);
+  const initialRoster = blank
+    ? [[1, '', ''], [2, '', '']]
+    : [[1, 'Rahul', ''], [2, 'Priya', ''], [3, 'Amit', ''], [4, 'Neha', '']];
+  setupSheet.getRange(ROSTER_START_ROW, 1, initialRoster.length, 3).setValues(initialRoster);
+  ensureTripControls_();
 
   setupSheet.getDataRange()
     .setFontFamily('Roboto')
@@ -208,12 +226,336 @@ function setup() {
   updateExpensesStructure();
   recalculateAll(true);
 
-  safeAlert(
+  if (!blank) safeAlert(
     'Tracker initialized.\n\n' +
     '1. Enter or update participant names in Setup.\n' +
     '2. Select the correct Number of People.\n' +
     '3. Use Expense Splitter > Confirm / Update Setup.'
   );
+}
+
+/* =========================================================
+   TRIP ARCHIVES
+   ========================================================= */
+
+function ensureTripControls_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_SETUP);
+  if (sheet) {
+    sheet.getRange('D3').setValue('Current Trip ID');
+    sheet.getRange('D6').setValue('Save Trip').setFontWeight('bold');
+    sheet.getRange(SETUP_SAVE_CELL).insertCheckboxes().setValue(false).setNote(
+      'Tick to save all trip inputs as JSON in Records. Resets after saving. ' +
+      'Select a Records row and use the menu to load, download, or delete it.'
+    );
+  }
+  ensureRecordsSheet_();
+}
+
+function ensureRecordsSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_RECORDS) || ss.insertSheet(SHEET_RECORDS);
+  sheet.getRange(1, 1, 1, 6).setValues([[
+    'Trip ID', 'Trip Name', 'Saved At (UTC)', 'Input Rows', 'JSON Parts', 'Trip JSON (part 1)'
+  ]]).setBackground(COLOR.HEADER_DARK).setFontColor('#FFFFFF').setFontWeight('bold');
+  sheet.getRange('F1').setNote(
+    'Full JSON is stored in 40,000-character parts from F onward, each prefixed JSON:. ' +
+    'Use Download Selected Trip JSON for a single portable file. Do not edit archive cells.'
+  );
+  sheet.setFrozenRows(1);
+  sheet.setColumnWidth(1, 280);
+  sheet.setColumnWidth(2, 200);
+  sheet.setColumnWidth(3, 210);
+  sheet.setColumnWidth(6, 300);
+  return sheet;
+}
+
+function withTripLock_(action) {
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(10000);
+  try {
+    return action();
+  } finally {
+    // Flush pending spreadsheet changes before another archive action can start.
+    try {
+      SpreadsheetApp.flush();
+    } finally {
+      lock.releaseLock();
+    }
+  }
+}
+
+function tripAction_(action) {
+  try {
+    const result = withTripLock_(action);
+    safeAlert(result);
+    return true;
+  } catch (err) {
+    safeAlert(`Trip action failed: ${err.message}`);
+    Logger.log(err.stack || err.message);
+    return false;
+  }
+}
+
+function encodeTripCell_(value) {
+  return value instanceof Date
+    ? { type: 'date', value: value.toISOString() }
+    : value;
+}
+
+function decodeTripCell_(value) {
+  if (value && typeof value === 'object') return new Date(value.value);
+  return literalSheetCell_(value);
+}
+
+function literalSheetCell_(value) {
+  // Force text when restoring user input that Sheets would otherwise treat as a formula.
+  return typeof value === 'string' && /^[=']/.test(value) ? `'${value}` : value;
+}
+
+function captureTrip_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_SETUP);
+  const expenses = ss.getSheetByName(SHEET_EXPENSES);
+  if (!sheet || !expenses) throw new Error('Initialize the tracker first.');
+  const inputRows = expenses.getRange(2, 1, MAX_DATA_ROWS, COL.SPLIT).getValues();
+  // Keep interior blank rows and incomplete entries; omit only trailing empty rows.
+  while (inputRows.length && inputRows[inputRows.length - 1].every(value => value === '')) {
+    inputRows.pop();
+  }
+  const trip = {
+    format: 'travel-expense-trip',
+    schemaVersion: TRIP_SCHEMA_VERSION,
+    id: String(sheet.getRange(SETUP_TRIP_ID_CELL).getValue() || Utilities.getUuid()),
+    savedAt: new Date().toISOString(),
+    timeZone: ss.getSpreadsheetTimeZone(),
+    setup: {
+      tripName: String(sheet.getRange(SETUP_TRIP_NAME_CELL).getValue()),
+      participantCount: Number(sheet.getRange(SETUP_NUM_PEOPLE_CELL).getValue()),
+      currency: String(sheet.getRange(SETUP_CURRENCY_CELL).getValue()),
+      confirmed: sheet.getRange(SETUP_CONFIRM_CELL).getValue() === true,
+      roster: sheet.getRange(ROSTER_START_ROW, 1, MAX_PARTICIPANTS, 3)
+        .getValues().map(row => row.map(encodeTripCell_))
+    },
+    expenses: inputRows.map(row => row.map(encodeTripCell_))
+  };
+  validateTrip_(trip);
+  return trip;
+}
+
+function validateTrip_(trip) {
+  if (!trip || trip.format !== 'travel-expense-trip' || trip.schemaVersion !== TRIP_SCHEMA_VERSION) {
+    throw new Error('Unsupported trip JSON format or version.');
+  }
+  if (typeof trip.id !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(trip.id) ||
+      typeof trip.savedAt !== 'string' || !Number.isFinite(Date.parse(trip.savedAt)) ||
+      typeof trip.timeZone !== 'string' || !trip.timeZone) {
+    throw new Error('Invalid trip identity, timestamp, or timezone.');
+  }
+  const settings = trip.setup;
+  if (!settings || typeof settings.tripName !== 'string' || typeof settings.currency !== 'string' ||
+      settings.tripName.length > 50000 || settings.currency.length > 50000 ||
+      typeof settings.confirmed !== 'boolean' || !Number.isInteger(settings.participantCount) ||
+      settings.participantCount < MIN_PARTICIPANTS || settings.participantCount > MAX_PARTICIPANTS) {
+    throw new Error('Invalid trip settings; participant count must be 2–15.');
+  }
+  const validCell = value => (typeof value === 'string' && value.length <= 50000) ||
+    typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)) ||
+    (value && typeof value === 'object' && !Array.isArray(value) && value.type === 'date' &&
+      typeof value.value === 'string' && Number.isFinite(Date.parse(value.value)));
+  const validRows = (rows, width, maximum) => Array.isArray(rows) && rows.length <= maximum &&
+    rows.every(row => Array.isArray(row) && row.length === width && row.every(validCell));
+  if (!validRows(settings.roster, 3, MAX_PARTICIPANTS) || settings.roster.length !== MAX_PARTICIPANTS ||
+      !validRows(trip.expenses, COL.SPLIT, MAX_DATA_ROWS)) {
+    throw new Error('Invalid roster or expenses; JSON supports 15 roster rows and 500 expense rows.');
+  }
+  return trip;
+}
+
+function saveTripSnapshot_(trip) {
+  validateTrip_(trip);
+  const sheet = ensureRecordsSheet_();
+  const lastRow = sheet.getLastRow();
+  const ids = lastRow > 1 ? sheet.getRange(2, 1, lastRow - 1, 1).getValues() : [];
+  const index = ids.findIndex(row => row[0] === trip.id);
+  const targetRow = index < 0 ? Math.max(2, lastRow + 1) : index + 2;
+  const json = JSON.stringify(trip);
+  const parts = [];
+  for (let start = 0; start < json.length;) {
+    let end = Math.min(start + TRIP_JSON_CHUNK_SIZE, json.length);
+    // Keep UTF-16 surrogate pairs together when a description contains emoji.
+    const lastCode = json.charCodeAt(end - 1);
+    if (end < json.length && lastCode >= 0xD800 && lastCode <= 0xDBFF) end--;
+    parts.push(`JSON:${json.slice(start, end)}`);
+    start = end;
+  }
+  const width = 5 + parts.length;
+  if (width > sheet.getMaxColumns()) sheet.insertColumnsAfter(sheet.getMaxColumns(), width - sheet.getMaxColumns());
+  if (targetRow > sheet.getMaxRows()) sheet.insertRowsAfter(sheet.getMaxRows(), targetRow - sheet.getMaxRows());
+  const name = decodeTripCell_(trip.setup.tripName || '(Untitled trip)');
+  sheet.getRange(targetRow, 1, 1, width).setValues([[
+    trip.id, name, trip.savedAt,
+    trip.expenses.filter(row => row.some(value => value !== '')).length, parts.length, ...parts
+  ]]);
+  if (width < sheet.getMaxColumns()) {
+    sheet.getRange(targetRow, width + 1, 1, sheet.getMaxColumns() - width).clearContent();
+  }
+  SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP)
+    .getRange(SETUP_TRIP_ID_CELL).setValue(trip.id);
+  return trip;
+}
+
+function saveTrip() {
+  return tripAction_(() => {
+    const trip = saveTripSnapshot_(captureTrip_());
+    return `Trip saved in Records: ${trip.setup.tripName || '(Untitled trip)'}.\n` +
+      'All expense inputs are included. Select its Records row to load or download JSON.';
+  });
+}
+
+function selectedTrip_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getActiveSheet();
+  const range = sheet.getActiveRange();
+  if (sheet.getName() !== SHEET_RECORDS || !range || range.getRow() < 2 || range.getNumRows() !== 1) {
+    throw new Error('Select one saved trip row in Records first.');
+  }
+  return readTripRecord_(sheet, range.getRow());
+}
+
+function readTripRecord_(sheet, row) {
+  const meta = sheet.getRange(row, 1, 1, 5).getValues()[0];
+  const count = meta[4];
+  if (!meta[0] || !Number.isInteger(count) || count < 1 || count > sheet.getMaxColumns() - 5) {
+    throw new Error('This row does not contain a valid saved trip.');
+  }
+  const parts = sheet.getRange(row, 6, 1, count).getValues()[0];
+  if (parts.some(part => typeof part !== 'string' || !part.startsWith('JSON:'))) {
+    throw new Error('Saved JSON is incomplete or damaged.');
+  }
+  const trip = validateTrip_(JSON.parse(parts.map(part => part.slice(5)).join('')));
+  if (trip.id !== meta[0]) throw new Error('Saved trip ID does not match its JSON.');
+  return { row, trip };
+}
+
+function archiveCurrentTrip_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss.getSheetByName(SHEET_SETUP) || !ss.getSheetByName(SHEET_EXPENSES)) return;
+  const trip = captureTrip_();
+  const hasInput = trip.setup.tripName || trip.expenses.length ||
+    trip.setup.currency !== '₹' || trip.setup.participantCount !== MIN_PARTICIPANTS || trip.setup.confirmed ||
+    trip.setup.roster.some(row => row[1] !== '' || row[2] !== '');
+  if (hasInput) saveTripSnapshot_(trip);
+}
+
+function restoreTrip_(trip) {
+  validateTrip_(trip);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (trip.timeZone !== ss.getSpreadsheetTimeZone()) {
+    throw new Error('Trip timezone differs from this spreadsheet. Match spreadsheet timezone before loading to preserve dates.');
+  }
+  archiveCurrentTrip_();
+  initializeTracker_(true);
+  const sheet = ss.getSheetByName(SHEET_SETUP);
+  sheet.getRange('B2:B4').setValues([
+    [decodeTripCell_(trip.setup.tripName)], [trip.setup.participantCount], [decodeTripCell_(trip.setup.currency)]
+  ]);
+  sheet.getRange(SETUP_TRIP_ID_CELL).setValue(trip.id);
+  sheet.getRange(ROSTER_START_ROW, 1, MAX_PARTICIPANTS, 3)
+    .setValues(trip.setup.roster.map(row => row.map(decodeTripCell_)));
+  if (trip.expenses.length) {
+    ss.getSheetByName(SHEET_EXPENSES).getRange(2, 1, trip.expenses.length, COL.SPLIT)
+      .clearDataValidations()
+      .setValues(trip.expenses.map(row => row.map(decodeTripCell_)));
+  }
+  const validSetup = validateSetupStatus();
+  sheet.getRange(SETUP_CONFIRM_CELL).setValue(trip.setup.confirmed && validSetup);
+  updateExpensesStructure();
+  recalculateAll(true);
+  ss.setActiveSheet(ss.getSheetByName(SHEET_EXPENSES));
+}
+
+function loadSelectedTrip() {
+  return tripAction_(() => {
+    const selected = selectedTrip_();
+    restoreTrip_(selected.trip);
+    return `Loaded trip: ${selected.trip.setup.tripName || '(Untitled trip)'}. Current inputs were saved first.`;
+  });
+}
+
+function newTrip() {
+  const ui = SpreadsheetApp.getUi();
+  if (ui.alert('New Trip', 'Save current inputs in Records and start a blank trip?', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  return tripAction_(() => {
+    archiveCurrentTrip_();
+    initializeTracker_(true);
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    ss.setActiveSheet(ss.getSheetByName(SHEET_SETUP));
+    return 'New trip ready. Enter a trip name and participant names in Setup. Saved Records remain available.';
+  });
+}
+
+function deleteSelectedTrip() {
+  try {
+    const selected = selectedTrip_();
+    const ui = SpreadsheetApp.getUi();
+    if (ui.alert('Delete Saved Trip',
+      `Permanently delete the saved trip "${selected.trip.setup.tripName || '(Untitled trip)'}"? ` +
+      'Active trip inputs and downloaded JSON files remain available.', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+    return tripAction_(() => {
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const sheet = ss.getSheetByName(SHEET_RECORDS);
+      // Alerts suspend execution. Re-find the ID after acquiring the lock in case rows moved.
+      const rows = sheet.getLastRow() - 1;
+      const ids = rows > 0 ? sheet.getRange(2, 1, rows, 1).getValues() : [];
+      const index = ids.findIndex(row => row[0] === selected.trip.id);
+      if (index < 0) throw new Error('Saved trip was already deleted.');
+      sheet.deleteRow(index + 2);
+      const setupSheet = ss.getSheetByName(SHEET_SETUP);
+      if (setupSheet && setupSheet.getRange(SETUP_TRIP_ID_CELL).getValue() === selected.trip.id) {
+        setupSheet.getRange(SETUP_TRIP_ID_CELL).clearContent();
+      }
+      return 'Saved trip deleted.';
+    });
+  } catch (err) {
+    safeAlert(err.message);
+    return false;
+  }
+}
+
+function downloadSelectedTrip() {
+  try {
+    const json = withTripLock_(() => JSON.stringify(selectedTrip_().trip, null, 2));
+    showTripJsonDialog_(json);
+  } catch (err) {
+    safeAlert(err.message);
+  }
+}
+
+function showImportTrip() {
+  showTripJsonDialog_('');
+}
+
+function showTripJsonDialog_(json) {
+  const template = HtmlService.createTemplateFromFile('TripJson');
+  // Prevent user text from ending the script element in the evaluated template.
+  template.tripJsonLiteral = JSON.stringify(json).replace(/</g, '\\u003c');
+  SpreadsheetApp.getUi().showModalDialog(
+    template.evaluate().setWidth(460).setHeight(330), json ? 'Download Trip JSON' : 'Import Trip JSON'
+  );
+}
+
+function importTripJson(json) {
+  // Called only after the dialog's explicit replace confirmation.
+  if (typeof json !== 'string' || json.length > 125000000) throw new Error('Invalid or oversized JSON file.');
+  const trip = validateTrip_(JSON.parse(json));
+  return withTripLock_(() => {
+    // Imported files receive a fresh identity, so an existing archive is never overwritten.
+    trip.id = Utilities.getUuid();
+    restoreTrip_(trip);
+    saveTripSnapshot_(trip);
+    return 'Trip imported and loaded. Previous inputs were saved in Records.';
+  });
 }
 
 /* =========================================================
@@ -603,6 +945,16 @@ function onEdit(e) {
   const a1 = range.getA1Notation();
 
   if (sheetName === SHEET_SETUP) {
+    if (a1 === SETUP_SAVE_CELL) {
+      if (range.getValue() === true) {
+        try {
+          saveTrip();
+        } finally {
+          range.setValue(false);
+        }
+      }
+      return;
+    }
     /*
      * Checkbox confirmation from Setup!B6.
      */
@@ -791,7 +1143,7 @@ function updateExpensesStructure() {
 
   sheet
     .getRange(1, 1, 1, headers.length)
-    .setValues([headers])
+    .setValues([headers.map(literalSheetCell_)])
     .setBackground(COLOR.HEADER)
     .setFontColor('#FFFFFF')
     .setFontWeight('bold')
@@ -1279,7 +1631,7 @@ function writeLiveSummary_(sheet, col, ledger, format) {
 
   sheet
     .getRange(4, col, roster.length, SUMMARY_WIDTH)
-    .setValues(rows);
+    .setValues(rows.map(row => row.map(literalSheetCell_)));
 
   sheet
     .getRange(4, col + 1, roster.length, 3)
@@ -1763,7 +2115,7 @@ function updateSendReportsSheet(existingLedger) {
 
   sheet
     .getRange(3, 1, summaryRows.length, 6)
-    .setValues(summaryRows);
+    .setValues(summaryRows.map(row => row.map(literalSheetCell_)));
 
   sheet
     .getRange(3, 3, summaryRows.length, 3)
@@ -1847,7 +2199,7 @@ function updateSendReportsSheet(existingLedger) {
 
     sheet
       .getRange(startRow + 2, 1, rows.length, 5)
-      .setValues(rows);
+      .setValues(rows.map(row => row.map(literalSheetCell_)));
 
     sheet
       .getRange(startRow + 2, 3, rows.length, 1)

@@ -45,7 +45,8 @@ function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26, maxRo
   const sheet = {
     reads,
     cell,
-    getLastRow: () => lastRow,
+    getLastRow: () => Math.max(lastRow, 0, ...[...cells.entries()]
+      .filter(([, value]) => value !== '').map(([key]) => Number(key.split(':')[0]))),
     getMaxColumns: () => maxColumns,
     getMaxRows: () => maxRows,
     insertColumnsAfter(after, count) { maxColumns += count; },
@@ -54,6 +55,18 @@ function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26, maxRo
     autoResizeRows() { return sheet; },
     setColumnWidth() { return sheet; },
     setFrozenRows() { return sheet; },
+    clear() { cells.clear(); lastRow = 0; return sheet; },
+    getDataRange() { return sheet.getRange(1, 1, Math.max(1, sheet.getLastRow()), maxColumns); },
+    deleteRow(row) {
+      const oldCells = [...cells.entries()];
+      cells.clear();
+      oldCells.forEach(([key, value]) => {
+        const [r, c] = key.split(':').map(Number);
+        if (r !== row) cells.set(`${r > row ? r - 1 : r}:${c}`, value);
+      });
+      lastRow = Math.max(0, lastRow - 1);
+      maxRows--;
+    },
     getRange(row, col, height = 1, width = 1) {
       if (typeof row === 'string') {
         const match = /^([A-Z]+)(\d+)(?::([A-Z]+)(\d+))?$/.exec(row);
@@ -80,14 +93,15 @@ function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26, maxRo
             Array.from({ length: width }, (_, c) => cell(row + r, col + c)));
         },
         setValue(value) {
-          cells.set(`${row}:${col}`, value);
+          cells.set(`${row}:${col}`, typeof value === 'string' && value.startsWith("'") ? value.slice(1) : value);
           return range;
         },
         setValues(values) {
           assert.equal(values.length, height, 'Spreadsheet write height');
           values.forEach((valuesRow, r) => {
             assert.equal(valuesRow.length, width, 'Spreadsheet write width');
-            valuesRow.forEach((value, c) => cells.set(`${row + r}:${col + c}`, value));
+            valuesRow.forEach((value, c) => cells.set(`${row + r}:${col + c}`,
+              typeof value === 'string' && value.startsWith("'") ? value.slice(1) : value));
           });
           return range;
         },
@@ -102,7 +116,8 @@ function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26, maxRo
         'breakApart', 'clearFormat', 'merge', 'setBackground', 'setFontColor',
         'setFontWeight', 'setHorizontalAlignment', 'setNumberFormat',
         'setBackgrounds', 'setFontColors', 'setFontStyle', 'setFontSize', 'setWrap',
-        'clearDataValidations', 'setVerticalAlignment', 'setDataValidation'
+        'clearDataValidations', 'setVerticalAlignment', 'setDataValidation',
+        'setNote', 'setFontFamily', 'insertCheckboxes'
       ]) range[method] = () => range;
       return range;
     }
@@ -127,19 +142,45 @@ function loadAppsScript({
   const reports = getMockSheet([], { maxColumns: 6 });
   setup.getName = () => 'Setup';
   sheet.getName = () => 'Expenses';
+  const sheets = new Map([['Setup', setup], ['Expenses', sheet], ['Send Reports', reports]]);
+  let activeSheet = sheet;
   const spreadsheet = {
     getSheetByName(name) {
       if (name === 'Setup') return missingSetup ? null : setup;
       if (name === 'Expenses') return missingExpenses ? null : sheet;
-      if (name === 'Send Reports') return reports;
-      throw new Error(`Unexpected sheet access: ${name}`);
+      return sheets.get(name) || null;
     },
+    insertSheet(name) {
+      const newSheet = getMockSheet();
+      newSheet.getName = () => name;
+      sheets.set(name, newSheet);
+      return newSheet;
+    },
+    getActiveSheet: () => activeSheet,
+    setActiveSheet(value) { activeSheet = value; },
     getSpreadsheetTimeZone: () => 'Asia/Kolkata'
   };
+  const alerts = [];
+  const menuItems = [];
+  const ui = {
+    ButtonSet: { YES_NO: 'YES_NO' }, Button: { YES: 'YES', NO: 'NO' },
+    answer: 'YES',
+    alert(...args) { alerts.push(args); return ui.answer; },
+    createMenu() {
+      const menu = {
+        addItem(label, action) { menuItems.push([label, action]); return menu; },
+        addSeparator() { return menu; }, addToUi() {}
+      };
+      return menu;
+    }
+  };
+  let nextId = 0;
   const context = vm.createContext({
     Date,
     SpreadsheetApp: {
       getActiveSpreadsheet: () => spreadsheet,
+      getUi: () => ui,
+      flush() {},
       newDataValidation() {
         const builder = {};
         for (const method of ['requireDate', 'setAllowInvalid', 'setHelpText', 'requireValueInList']) {
@@ -151,10 +192,13 @@ function loadAppsScript({
     },
     Logger: { log() {} },
     LockService: { getDocumentLock: () => ({ waitLock() {}, releaseLock() {} }) },
-    Utilities: { formatDate: date => date.toISOString().slice(0, 10) }
+    Utilities: {
+      formatDate: date => date.toISOString().slice(0, 10),
+      getUuid: () => `test-trip-${++nextId}`
+    }
   });
   vm.runInContext(source, context, { filename: 'Code.js', timeout: 1000 });
-  return { app: context, sheet, setup, reports };
+  return { app: context, sheet, setup, reports, spreadsheet, alerts, ui, menuItems };
 }
 
 // Convert VM arrays/objects into the test realm for strict structural assertions.

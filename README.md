@@ -34,6 +34,7 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 * **Automated PDF Email Statements:** Generates clean, personalized HTML/PDF expense reports — each person receives only the expenses that involve them — dispatched via Gmail in one click.
 * **Dynamic Roster Scaling:** Scale your group seamlessly from 2 to 15 people — the grid, dropdowns, person columns, and summary panel auto-adjust on the fly.
 * **Mobile Editing & Confirmation:** Enter expenses and confirm setup through checkboxes in the Sheets app. Send PDF emails from the desktop menu or Apps Script editor.
+* **Reusable Trip Records:** Save complete trip inputs as JSON, download a portable file, reload past trips, and start a blank trip in the same spreadsheet.
 
 ---
 
@@ -90,6 +91,8 @@ Use a Google account with permission to edit your own spreadsheet copy. Node.js 
 
 **Initialize only on a fresh copy:** `setup()` / `1. Initialize / Reset Tracker` clears the **Setup**, **Expenses**, and **Send Reports** sheets. Updating script code does not require running initialization again.
 
+Saved **Records** survive initialization. Use **New Trip** for the next journey: it saves current inputs before clearing the active trip. After installing this update, reload the spreadsheet to add Records and the Save Trip checkbox without resetting existing inputs.
+
 ### Option A: 1-Click Google Sheet Template (Easiest)
 1. Click the **[Make a Copy Template Link](https://docs.google.com/spreadsheets/d/1RhpHiZl04dA-AfKIuFesJz137zO-eatgfG5TYGRXXJM/copy)**.
 2. Open the newly created spreadsheet in your Google Drive.
@@ -100,6 +103,7 @@ Use a Google account with permission to edit your own spreadsheet copy. Node.js 
 1. Create a blank **Google Sheet**.
 2. Navigate to **Extensions** → **Apps Script**.
 3. Replace all content in `Code.gs` with the code from [`Code.js`](Code.js).
+   Add an HTML file named `TripJson` in Apps Script and copy [`TripJson.html`](TripJson.html) into it for JSON downloads and imports.
 4. In Apps Script **Project Settings**, enable the manifest editor and copy [`appsscript.json`](appsscript.json) into the project's `appsscript.json` to match the V8 runtime and timezone.
 5. Save, select `setup` in the function dropdown, and click **Run** to initialize the blank sheet and authorize the script.
 6. Reload Google Sheets to load the **Expense Splitter** menu, then follow the workflow below.
@@ -113,12 +117,13 @@ Use a Google account with permission to edit your own spreadsheet copy. Node.js 
 3. Enter expenses in **Expenses!A2:E501**. Choose a payer and leave **Split Among** blank for everyone, or enter names such as `Rahul, Neha`.
 4. When ready to review, select **Confirm All Expenses** and open **Send Reports**. On mobile, tick `Setup!B6`; if already checked, clear it and tick it again to refresh.
 5. To send statements, use **3. Send PDF Reports via Email** on desktop and grant email permission if requested. Review delivery status in **Send Reports**.
+6. Save the completed trip with **Save Trip** or the `Setup!E6` checkbox. Use **New Trip** to reuse this spreadsheet.
 
 Confirmation is a report-visibility gate, not an edit lock: expense edits continue to recalculate the plan. Changing setup details resets confirmation. After renaming or removing participants, update their names in existing **Paid By** and **Split Among** entries before reconfirming.
 
 ---
 
-## 🧭 The Three Tabs
+## 🧭 The Four Tabs
 
 ### 1️⃣ Setup
 Configure the trip and the group:
@@ -131,6 +136,8 @@ Configure the trip and the group:
 | `Setup!B5` | Setup Status (auto-validated) | — |
 | `Setup!B6` | **Setup Confirmed?** checkbox; also gates settlement/report output | ☐ FALSE |
 | `Setup!B7` | **Confirm / Update Setup** checkbox action; resets after use | ☐ FALSE |
+| `Setup!E6` | **Save Trip** checkbox action; saves a complete JSON snapshot in Records and resets after use | ☐ FALSE |
+| `Setup!E3` | Current trip ID; maintained by the script to update the same archive on repeated saves | — |
 | `Setup!A9:C…` | Roster: `#` · `Name` · `Email (optional)` — rows scale with B3 | — |
 
 > Emails are **optional** — only people with an email address receive PDF reports; everyone else is cleanly skipped and logged.
@@ -165,6 +172,23 @@ The live summary in **H:K** is always available and recalculates on expense edit
 
 * **Personal Balances Summary** — per-person Total Paid, Total Share, Net Balance, and email delivery status.
 * **Simplified Settlement Plan** — the minimum set of "X pays Y ₹amount" transactions that settles the whole group.
+
+### 4️⃣ Records
+
+Each saved trip occupies one row. Columns A:E show the trip ID, name, UTC save time, number of nonempty expense input rows, and JSON part count. JSON occupies F onward in parts of at most 40,000 characters, each prefixed `JSON:`. Large trips therefore fit across multiple cells. Keep archive cells and the current trip ID unchanged; use the menu to manage records.
+
+- **Save:** select **Expense Splitter → Save Trip**, or tick `Setup!E6`. Saving again updates the current trip's existing archive, including after loading that trip. Saves are manual snapshots; individual edits do not automatically update Records.
+- **Load:** select a cell in one saved trip's Records row, then choose **Load Selected Trip**. Current inputs are saved before the selected trip replaces them. Expense columns, summaries, and settlement plans are rebuilt without sending email.
+- **Download:** select a saved trip row and choose **Download Selected Trip JSON**, then click the download link. This creates one `.json` file on your device. Save current changes first if you want them in the file.
+- **Import:** choose **Import Trip JSON**, select a downloaded file, and confirm **Import and load trip**. The file receives a new trip ID, current inputs are saved, and the imported trip is loaded and added to Records.
+- **Delete:** select a saved trip row and choose **Delete Selected Trip**. Confirm to remove only that archive. Active inputs and downloaded files remain available; saving active inputs again creates a new archive if its record was deleted.
+- **New trip:** choose **New Trip** and confirm. Current inputs are saved first; trip name, participant names, expenses, and confirmation are cleared. The blank canvas starts with two participant slots and ₹ currency. Saved Records remain available.
+
+Snapshots include trip name, currency, participant count, all 15 roster slots (including inactive names and emails), confirmation, and all 500 supported expense input rows in A:E. Draft entries, interior blank rows, subgroup selections, and actual date values survive a round trip. Only trailing empty rows are omitted. Formulas are saved as their current values. Derived output is recalculated on load; email delivery statuses are not retained.
+
+Incomplete names and draft expenses can be saved. Participant count must still be 2–15. Invalid or unsupported JSON is rejected before replacing inputs. Loading requires the same spreadsheet timezone as the saved trip, preserving date instants and calendar display. JSON contains participant emails and expense details, so share files with the same care as the spreadsheet.
+
+On mobile, `Setup!E6` saves to Records. File download/import and record-management menu actions use desktop Google Sheets. JSON files download through the browser; no Drive file or email is created.
 
 ---
 
@@ -210,16 +234,22 @@ The exact solver uses `O(n × 2^n)` time and `O(2^n)` memory, with at most 32,76
 
 | Menu Item | Action |
 |-----------|--------|
-| `1. Initialize / Reset Tracker` | Clears and rebuilds the three tracker sheets |
+| `1. Initialize / Reset Tracker` | Clears and rebuilds the three active tracker sheets; preserves Records |
 | `2. Recalculate Live Expenses` | Recalculates expense nets and Send Reports live summary; settlement output requires confirmation |
 | `Confirm / Update Setup` | Validates the roster, rebuilds generated columns, and confirms setup |
 | `Confirm All Expenses` | Publishes balances + settlement plan (assignable to a drawing button) |
 | `Re-open for Editing (Unconfirm)` | Withdraws the report view |
+| `Save Trip` | Saves or updates the current trip's complete JSON snapshot in Records |
+| `Load Selected Trip` | Saves current inputs, then loads the selected Records row |
+| `Download Selected Trip JSON` | Opens a download link for the selected saved trip |
+| `Import Trip JSON` | Saves current inputs, then loads and archives an exported JSON file with a new ID |
+| `Delete Selected Trip` | Deletes the selected archive after confirmation; keeps active inputs |
+| `New Trip` | Saves current inputs, then creates a blank trip while keeping Records |
 | `3. Send PDF Reports via Email` | Emails personalized PDF statements to roster emails |
 | `Test Email Permission` | Sends a test mail to verify the send-mail authorization |
 | `Diagnose Settlement Data` | Shows roster, ledger errors, balance checks, and settlement rows |
 
-> **Mobile users:** use `Setup!B6` or `Setup!B7` for confirmation. Email sending uses the desktop menu or the `sendPdfReports()` function in Apps Script.
+> **Mobile users:** use `Setup!B6` or `Setup!B7` for confirmation and `Setup!E6` to save a trip. Email sending uses the desktop menu or the `sendPdfReports()` function in Apps Script.
 
 ---
 
@@ -244,7 +274,7 @@ clasp push
 clasp open-script
 ```
 
-The first commands check syntax and run local tests. `clasp status` lists upload files; `clasp push` uploads to the configured project; `clasp open-script` opens its editor. The upload should contain `Code.js` and `appsscript.json`; `.claspignore` excludes tests and preview artifacts. Clasp authentication authorizes uploads; spreadsheet and email permissions are granted separately when running the script.
+The first commands check syntax and run local tests. `clasp status` lists upload files; `clasp push` uploads to the configured project; `clasp open-script` opens its editor. The upload should contain `Code.js`, `TripJson.html`, and `appsscript.json`; `.claspignore` excludes tests and preview artifacts. Clasp authentication authorizes uploads; spreadsheet and email permissions are granted separately when running the script.
 
 Run `setup()` only when initializing a blank development spreadsheet. For subsequent code updates, reload the sheet and use **2. Recalculate Live Expenses** or **Confirm All Expenses** as needed. Edit-trigger behavior, actual PDF conversion, and email delivery require checks in Google Sheets.
 
@@ -255,6 +285,7 @@ Run `setup()` only when initializing a blank development spreadsheet. For subseq
 ```
 travel-expense-excel/
 ├── Code.js                   # Google Apps Script engine
+├── TripJson.html             # Browser JSON download and file-import dialog
 ├── appsscript.json           # Apps Script runtime settings
 ├── .clasp.json               # Apps Script project mapping
 ├── .claspignore              # Excludes local tests from uploads
@@ -267,6 +298,8 @@ travel-expense-excel/
     ├── optimal-settlements.test.cjs # Exact minima, explanations, and benchmarks
     ├── settlements.test.cjs  # Settlement validity and minimum-count checks
     ├── pdf-report.test.cjs   # Personal statement content and privacy checks
+    ├── trip-records.test.cjs # Archive, JSON round-trip, blank trip, and deletion checks
+    ├── trip-json-dialog.test.cjs # Download content and import dialog behavior
     ├── preview-pdf.cjs       # Generates sample report HTML without sending email
     ├── helpers/              # Spreadsheet boundary mocks and exact test oracle
     └── README.md             # Test scope and known limitations
@@ -303,6 +336,8 @@ node --test
 The tests execute the real `Code.js` in an isolated VM with an in-memory spreadsheet boundary. They cover exact totals, per-person shares and balances, remainder allocation, subgroup splits, invalid rows, generated spreadsheet values, and debt clearance. Exact minimum counts are checked against an independent exhaustive oracle on 625 small balanced cases and 200 seeded groups. Additional cases exercise 15 participants, 500 expense rows, explanation text, roster changes, and consistent spreadsheet/PDF payment instructions. The suite also reports a local 15-person solver benchmark.
 
 See [`tests/README.md`](tests/README.md) for focused commands and limitations. `.claspignore` keeps local tests out of Apps Script uploads. Actual Google Sheets triggers, authorization, PDF generation, and email delivery still require manual checks.
+
+Trip archive tests cover 15 participants and all 500 expenses across JSON parts, draft rows, dates, inactive roster entries, repeated saves, confirmation controls, save-before-replace behavior, import validation, deletion confirmation, and formula-like text. In a disposable spreadsheet, also verify `Setup!E6`, a real browser download/import, and cancelled New Trip/Delete actions. Check the new Save Trip control beside the existing setup checkboxes.
 
 ---
 
