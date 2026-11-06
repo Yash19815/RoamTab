@@ -12,12 +12,8 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 
 <br />
 
-<!-- ================================================================= -->
-<!-- SCREENSHOT PLACEHOLDER 1: HERO DEMO GIF -->
-<!-- Replace 'assets/hero-demo.gif' with your recorded workflow GIF -->
-<!-- ================================================================= -->
 <a href="#-quick-start">
-  <img src="assets/hero-demo.gif" alt="Expense Splitter Interactive Demo" width="850" />
+  <img src="assets/Expense%20Tab.png" alt="Expense tracker with per-person splits and live group balances" width="850" />
 </a>
 
 <br /><br />
@@ -43,32 +39,44 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 
 ## 📸 Screenshots & Workflow
 
+### 1. Trip & Roster Setup
+
+<img src="assets/Setup.png" alt="Setup tab with trip name, participant count, currency, and four-person roster" width="586" />
+
+### 2. Expense Tracker & Live Summary
+
+<img src="assets/Expense%20Tab.png" alt="Expenses tab showing shared expenses, individual balances, and the live summary" width="100%" />
+
+### 3. Simplified Settlements
+
+<img src="assets/Final_Settlement.png" alt="Personal balances and minimum-transfer settlement plan with payment explanations" width="100%" />
+
+### 4. Generated Participant PDF
+
 <table width="100%">
   <tr>
-    <td width="50%" align="center">
-      <b>1. Trip & Roster Setup</b><br /><br />
-      <!-- SCREENSHOT PLACEHOLDER 2: SETUP TAB -->
-      <img src="assets/setup_page.png" alt="Setup Tab" width="100%" />
+    <td width="50%" align="center" valign="top">
+      <b>Receive money</b><br /><br />
+      <a href="assets/pdf-report.png"><img src="assets/pdf-report.png" alt="Receive statement showing Alice's amount to collect and incoming payments" width="100%" /></a>
     </td>
-    <td width="50%" align="center">
-      <b>2. Smart Expense Tracker + Live Summary</b><br /><br />
-      <!-- SCREENSHOT PLACEHOLDER 3: EXPENSES TAB -->
-      <img src="assets/expenses-tab.png" alt="Expenses Tab" width="100%" />
+    <td width="50%" align="center" valign="top">
+      <b>Pay money</b><br /><br />
+      <a href="assets/pdf-report-pay.png"><img src="assets/pdf-report-pay.png" alt="Pay statement showing Bob's amount owed and payment instructions" width="100%" /></a>
     </td>
   </tr>
   <tr>
-    <td width="50%" align="center">
-      <b>3. Simplified Settlements</b><br /><br />
-      <!-- SCREENSHOT PLACEHOLDER 4: SETTLEMENT PLAN -->
-      <img src="assets/settlements-tab.png" alt="Settlement Plan" width="100%" />
+    <td width="50%" align="center" valign="top">
+      <b>All settled</b><br /><br />
+      <a href="assets/pdf-report-settled.png"><img src="assets/pdf-report-settled.png" alt="All-settled statement with zero outstanding balance and no payment required" width="100%" /></a>
     </td>
-    <td width="50%" align="center">
-      <b>4. Generated Email PDF Report</b><br /><br />
-      <!-- SCREENSHOT PLACEHOLDER 5: PDF EMAIL REPORT -->
-      <img src="assets/pdf-report.png" alt="PDF Report Sample" width="100%" />
+    <td width="50%" align="center" valign="top">
+      <b>Long statement — first page</b><br /><br />
+      <a href="assets/pdf-report-long.png"><img src="assets/pdf-report-long.png" alt="First page of the six-page statement covering 80 expenses" width="100%" /></a>
     </td>
   </tr>
 </table>
+
+*PNG screenshots from the rendered [test previews](tests/preview-pdf.cjs), using fictional trip data. Click any image to view it at full size.*
 
 ---
 
@@ -199,6 +207,7 @@ travel-expense-excel/
 ├── .claspignore              # Excludes local tests from uploads
 ├── AGENTS.md                 # Contributor guidelines
 ├── README.md                 # Project documentation
+├── assets/                   # Setup, expenses, settlements, and PDF screenshots
 ├── docs/plans/               # Settlement design and decision log
 └── tests/
     ├── calculations.test.cjs # Money, ledger, and sheet output tests
