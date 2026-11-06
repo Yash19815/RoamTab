@@ -1477,10 +1477,8 @@ function buildSettlementExplanations_(ledger, settlements, currency) {
     remaining.set(toId, creditAfter);
 
     return [
-      `${settlement.from}: paid ${money(ledger.paid.get(fromId))} − share ${money(ledger.spent.get(fromId))} = ${money(ledger.balances.get(fromId))} net (owes).`,
-      `${settlement.to}: paid ${money(ledger.paid.get(toId))} − share ${money(ledger.spent.get(toId))} = ${money(ledger.balances.get(toId))} net (collects).`,
-      `Before: ${settlement.from} owes ${money(debtBefore)}; ${settlement.to} needs ${money(creditBefore)}. Pay the smaller amount: ${money(settlement.amountMinor)}.`,
-      `After: ${settlement.from} owes ${money(debtAfter)}; ${settlement.to} needs ${money(creditAfter)}.`
+      `${settlement.from} owes ${money(debtBefore)}. ${settlement.to} needs ${money(creditBefore)}.`,
+      `Pay ${money(settlement.amountMinor)} so at least one person reaches ${money(0)} balance.`
     ].join('\n');
   });
 }

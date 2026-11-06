@@ -4,7 +4,7 @@
 
 - Trip participants need the fewest possible transfers, not an approximation.
 - Keep the existing 2–15 participant and 500-expense limits, splitting rules, and integer minor-unit arithmetic.
-- Add an explanation cell alongside each settlement row, showing original net balances, balances before payment, the payment calculation, and balances after payment.
+- Add an explanation cell alongside each settlement row, showing outstanding debt, outstanding credit, and the smaller payment amount using the user's simple template.
 - Keep all processing in Google Apps Script without dependencies or external services.
 - Target seconds-scale calculation and benchmark 15-person inputs. Invalid results must block settlement output.
 - Use the same deterministic plan in spreadsheet output, diagnostics, and emailed payment instructions. PDF layout redesign is outside scope.
@@ -24,6 +24,7 @@
 | Guarantee minimum transfers | Fast greedy approximation | User explicitly requires the minimum every time. |
 | Use exact subset dynamic programming | Exact backtracking | User accepted subset DP after reviewing the grouping example; bounded state count and predictable work suit 15 people. |
 | Explain every transfer beside the table | One generic explanatory note | Show why the actual displayed amount is correct. |
+| Use the user's simple owes/needs/pay template | Detailed paid-minus-share and before/after breakdown | User requested shorter explanations while keeping the correct calculations. |
 | Fail on invalid input or verification errors | Silent approximate fallback | Preserve the minimum-transfer guarantee and money conservation. |
 
 ## Final Design
@@ -32,7 +33,7 @@ Sort nonzero balances by stable person ID. For each subset, store its balance su
 
 Reconstruct the chosen ordering and split it wherever the running balance returns to zero. This yields the maximum number of disjoint balanced groups. Settle each group with the existing greedy payment generator. Maximum grouping ensures no group can split further, so a group of k people uses exactly k − 1 transfers. Verify the final count equals nonzero people minus groups and that every balance clears.
 
-Add an `Explanation` column after `Instruction` in `Send Reports`. Derive text from the real ledger and replay the selected payments in display order. Show paid minus share for both people, their outstanding amounts, why the smaller outstanding amount is paid, and the remaining amounts. Wrap text and constrain column width.
+Add an `Explanation` column after `Instruction` in `Send Reports`. Derive text from the real ledger and replay the selected payments in display order. Use: “[Person A] owes ₹X. [Person B] needs ₹Y. Pay ₹[smaller of X or Y] so at least one person reaches ₹0 balance.” Substitute actual names, current outstanding amounts, and configured currency. Wrap text and constrain column width.
 
 ## Implementation and Verification Plan
 

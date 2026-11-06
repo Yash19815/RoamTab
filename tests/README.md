@@ -22,7 +22,7 @@ No dependencies, Google credentials, live spreadsheets, or email access are requ
 - Exercise 100 seeded trips, 1,000 seeded balance groups, and 100 small groups compared with an independent exact oracle.
 - Check the production exact solver against the independent exhaustive oracle for 625 balanced five-person cases and 200 seeded groups of up to 10 people.
 - Verify known minimum counts with 15 people and report timing for 20 maximum-size local cases without flaky runtime assertions.
-- Verify explanation text, exact cents and configured currency, report cleanup after roster changes or unconfirmation, and identical sheet/PDF payment instructions.
+- Verify the simple explanation template with outstanding debt, outstanding credit, and the smaller payment amount; check exact cents, configured currency, report cleanup after roster changes or unconfirmation, and identical sheet/PDF payment instructions.
 
 ## Findings
 

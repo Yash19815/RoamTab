@@ -186,18 +186,15 @@ describe('Settlement explanations in the report sheet', () => {
     return result;
   }
 
-  it('explains original balances and replays the actual payment order', () => {
+  it('uses the simple explanation template and replays the actual payment order', () => {
     const { app } = getTrip();
     const ledger = app.buildLedger_();
     const settlements = app.calculateOptimalSettlements_(ledger);
     const explanations = app.buildSettlementExplanations_(ledger, settlements, '₹');
-    assert.equal(explanations.length, 2);
-    assert.match(explanations[0], /Cara.*₹30\.00.*₹70\.00.*-₹40\.00/);
-    assert.match(explanations[0], /Alice.*₹120\.00.*₹55\.00.*₹65\.00/);
-    assert.match(explanations[0], /Before: Cara owes ₹40\.00; Alice needs ₹65\.00/);
-    assert.match(explanations[0], /After: Cara owes ₹0\.00; Alice needs ₹25\.00/);
-    assert.match(explanations[1], /Before: Bob owes ₹25\.00; Alice needs ₹25\.00/);
-    assert.match(explanations[1], /After: Bob owes ₹0\.00; Alice needs ₹0\.00/);
+    assert.deepEqual(plain(explanations), [
+      'Cara owes ₹40.00. Alice needs ₹65.00.\nPay ₹40.00 so at least one person reaches ₹0.00 balance.',
+      'Bob owes ₹25.00. Alice needs ₹25.00.\nPay ₹25.00 so at least one person reaches ₹0.00 balance.'
+    ]);
     assert.equal(ledger.balances.get(1), 6500, 'Explanation building must not mutate the ledger');
   });
 
@@ -222,8 +219,8 @@ describe('Settlement explanations in the report sheet', () => {
       ['Cara', 'Alice', 40, 'Cara pays Alice ₹40.00'],
       ['Bob', 'Alice', 25, 'Bob pays Alice ₹25.00']
     ]);
-    assert.match(rows[0][4], /After: Cara owes ₹0\.00; Alice needs ₹25\.00/);
-    assert.match(rows[1][4], /After: Bob owes ₹0\.00; Alice needs ₹0\.00/);
+    assert.equal(rows[0][4], 'Cara owes ₹40.00. Alice needs ₹65.00.\nPay ₹40.00 so at least one person reaches ₹0.00 balance.');
+    assert.equal(rows[1][4], 'Bob owes ₹25.00. Alice needs ₹25.00.\nPay ₹25.00 so at least one person reaches ₹0.00 balance.');
   });
 
   it('renders three report rows for the old four-transfer greedy case', () => {
