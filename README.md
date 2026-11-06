@@ -18,7 +18,7 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 
 <br /><br />
 
-[**🚀 Click Here to Make a Copy in Google Drive**](https://docs.google.com/spreadsheets/d/11dY2B2j1dNIRlWfagUtbX13LRmW894mhnhCGBVsx9oQ/copy)
+[**🚀 Click Here to Make a Copy in Google Drive**](https://docs.google.com/spreadsheets/d/1RhpHiZl04dA-AfKIuFesJz137zO-eatgfG5TYGRXXJM/copy)
 *(No installation required for non-technical users)*
 
 </div>
@@ -89,7 +89,7 @@ Use a Google account with permission to edit your own spreadsheet copy. Node.js 
 **Initialize only on a fresh copy:** `setup()` / `1. Initialize / Reset Tracker` clears the **Setup**, **Expenses**, and **Send Reports** sheets. Updating script code does not require running initialization again.
 
 ### Option A: 1-Click Google Sheet Template (Easiest)
-1. Click the **[Make a Copy Template Link](https://docs.google.com/spreadsheets/d/11dY2B2j1dNIRlWfagUtbX13LRmW894mhnhCGBVsx9oQ/copy)**.
+1. Click the **[Make a Copy Template Link](https://docs.google.com/spreadsheets/d/1RhpHiZl04dA-AfKIuFesJz137zO-eatgfG5TYGRXXJM/copy)**.
 2. Open the newly created spreadsheet in your Google Drive.
 3. Reload the spreadsheet to load the **Expense Splitter** menu, then select `1. Initialize / Reset Tracker` on the fresh copy.
 4. Authorize the script when prompted, then follow **Daily workflow** below. If the menu is missing, open **Extensions → Apps Script** and run `setup()` once.
