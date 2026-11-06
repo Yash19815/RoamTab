@@ -34,7 +34,7 @@ Instant per-person split calculations, a live group summary panel, greedy debt m
 * **100% Free & Self-Hosted:** No subscription limits, item limits, or ads. Your trip data stays inside your Google Drive.
 * **Instant Live Calculations:** Per-person split columns compute the moment you type an expense — no confirm step, no waiting, just like a native spreadsheet formula.
 * **Live Summary Panel:** A persistent dashboard beside your entries always shows the **Total Spent (Everyone)**, each person's **Spent (Share)** — what they technically consumed even if they paid nothing — and their **Net Balance** (+ collect / − owe).
-* **Greedy Settlement Engine:** On confirmation, computes the mathematically optimal minimum number of transactions to clear all group debts.
+* **Greedy Settlement Engine:** On confirmation, generates a plan that clears all group debts. Greedy matching does not guarantee the fewest possible transactions.
 * **Automated PDF Email Statements:** Generates clean, personalized HTML/PDF expense reports — each person receives only the expenses that involve them — dispatched via Gmail in one click.
 * **Dynamic Roster Scaling:** Scale your group seamlessly from 2 to 15 people — the grid, dropdowns, person columns, and summary panel auto-adjust on the fly.
 * **Mobile-First Workflow:** Full functionality through checkboxes and automatic triggers; no dependency on desktop-only custom menus.
@@ -83,7 +83,7 @@ Instant per-person split calculations, a live group summary panel, greedy debt m
 ### Option B: Manual Setup via Google Apps Script
 1. Create a blank **Google Sheet**.
 2. Navigate to **Extensions** → **Apps Script**.
-3. Replace all content in `Code.gs` with the code from [`main.gs`](main.gs).
+3. Replace all content in `Code.gs` with the code from [`Code.js`](Code.js).
 4. Save the project and click **Run** on the `setup` function to authorize scopes (including **Send email as you**, required for PDF reports).
 5. Reload your Google Sheet — the custom **Expense Splitter** menu will appear in the top navigation toolbar.
 
@@ -139,7 +139,7 @@ Enter expenses in columns **A–E**; everything else is computed live:
 Gated behind the **All Expenses Confirmed** checkbox. On confirmation it runs the greedy settlement engine and shows:
 
 * **Personal Balances Summary** — per-person Total Paid, Total Share, Net Balance, and email delivery status.
-* **Simplified Settlement Plan** — the minimum set of "X pays Y ₹amount" transactions that settles the whole group.
+* **Simplified Settlement Plan** — a greedy set of "X pays Y ₹amount" transactions that settles the whole group.
 
 ---
 
@@ -148,9 +148,9 @@ Gated behind the **All Expenses Confirmed** checkbox. On confirmation it runs th
 ### Equal & Partial Splits
 * **"All" or blank Split Among:** cost splits equally across the whole roster.
 * **Comma-separated names** (`Rahul, Neha`): cost splits only within that subgroup.
-* **Remainder handling:** fractional paisa left over from division is allocated to the payer so group balances always reconcile to zero.
+* **Remainder handling:** leftover whole paisa/cents are distributed one at a time by ascending participant ID among the included people. Shares add up to the original amount, and group balances reconcile to zero.
 
-### Minimum Transaction Engine (Greedy)
+### Settlement Engine (Greedy)
 Instead of N × (N−1) individual repayments, net debtors and creditors are matched largest-first:
 
 ```
@@ -158,6 +158,8 @@ Instead of N × (N−1) individual repayments, net debtors and creditors are mat
             |                                 |
             +——— settle min(owe, owed) ———→  repeat until zero
 ```
+
+The plan clears every balance but may use more transfers than an exact optimizer. For debts of ₹8, ₹7, and ₹5 with credits of ₹12 and ₹8, the current algorithm uses four transfers. Three suffice: ₹8 to the ₹8 creditor, and ₹7 plus ₹5 to the ₹12 creditor. Automated tests reproduce this case from expense rows.
 
 ### Performance Design
 * One batched read + two batched writes per edit — no per-cell API calls in the hot path.
@@ -187,17 +189,33 @@ Instead of N × (N−1) individual repayments, net debtors and creditors are mat
 ## 📂 Project Architecture
 
 ```
-dynamic-travel-expense-splitter/
-├── main.gs                   # Production-ready Apps Script engine
+travel-expense-excel/
+├── Code.js                   # Google Apps Script engine
+├── appsscript.json           # Apps Script runtime settings
+├── .clasp.json               # Apps Script project mapping
+├── .claspignore              # Excludes local tests from uploads
+├── AGENTS.md                 # Contributor guidelines
 ├── README.md                 # Project documentation
-├── LICENSE                   # MIT License
-└── assets/                   # Screenshots, diagrams, and hero GIFs
-    ├── hero-demo.gif
-    ├── setup-tab.png
-    ├── expenses-tab.png
-    ├── settlements-tab.png
-    └── pdf-report.png
+└── tests/
+    ├── calculations.test.cjs # Money, ledger, and sheet output tests
+    ├── settlements.test.cjs  # Settlement validity and minimum-count checks
+    ├── helpers/              # Spreadsheet boundary mocks and exact test oracle
+    └── README.md             # Test scope and known limitations
 ```
+
+---
+
+## Automated Calculation Tests
+
+Use Node.js 22 or newer. No npm dependencies or Google credentials are needed:
+
+```sh
+node --test
+```
+
+The tests execute the real `Code.js` in an isolated VM with an in-memory spreadsheet boundary. They cover exact totals, per-person shares and balances, remainder allocation, subgroup splits, invalid rows, generated spreadsheet values, and debt clearance. Seeded scenarios exercise 2–15 participants and 500 expense rows. A small exact oracle demonstrates that greedy settlements are not always minimal.
+
+See [`tests/README.md`](tests/README.md) for focused commands and limitations. `.claspignore` keeps local tests out of Apps Script uploads. Actual Google Sheets triggers, authorization, PDF generation, and email delivery still require manual checks.
 
 ---
 
