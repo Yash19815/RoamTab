@@ -3,7 +3,7 @@
  *
  * IMPORTANT
  * - setup() / “Initialize / Reset Tracker” destructively resets active inputs.
- * - New Trip and Load Trip save current inputs before replacing Expenses A:E.
+ * - New Trip and Load Trip save current inputs before replacing Expenses A:F.
  * - Delete Saved Trip removes only the selected archive after confirmation.
  * - Money is calculated in integer paise/cents to avoid floating-point issues.
  *
@@ -19,18 +19,19 @@
  * C: Amount
  * D: Paid By
  * E: Split Among
- * F onward: Generated per-person net values
+ * F: Currency (blank inherits Setup!B4)
+ * G onward: Generated per-person net values
  *
  * LIVE SUMMARY POSITION
  * Send Reports!H:K always contains the live summary, even before confirmation.
- * Expenses contains inputs A:E and dynamically sized participant net columns.
+ * Expenses contains inputs A:F and dynamically sized participant net columns.
  */
 
 const SHEET_SETUP = 'Setup';
 const SHEET_EXPENSES = 'Expenses';
 const SHEET_REPORTS = 'Send Reports';
 const SHEET_RECORDS = 'Records';
-const TRIP_SCHEMA_VERSION = 1;
+const TRIP_SCHEMA_VERSION = 2;
 const TRIP_JSON_CHUNK_SIZE = 40000;
 
 const COL = {
@@ -38,10 +39,14 @@ const COL = {
   DESC: 2,
   AMOUNT: 3,
   PAID_BY: 4,
-  SPLIT: 5
+  SPLIT: 5,
+  CURRENCY: 6
 };
 
-const FIRST_PERSON_COL = 6; // F
+const FIRST_PERSON_COL = 7; // G
+const FX_TTL_MS = 24 * 60 * 60 * 1000;
+const FX_CACHE_SECONDS = 21600; // CacheService permits at most six hours.
+let fxFetchAllowed_ = true;
 const SUMMARY_GAP = 1; // One blank spacer column
 const SUMMARY_WIDTH = 4; // Person, Paid, Spent, Net
 const MAX_DATA_ROWS = 500;
@@ -105,6 +110,7 @@ function onOpen() {
     .createMenu('Expense Splitter')
     .addItem('1. Initialize / Reset Tracker', 'setup')
     .addItem('2. Recalculate Live Expenses', 'recalculateAll')
+    .addItem('Enable Automatic Currency Conversion', 'enableAutomaticFx')
     .addSeparator()
     .addItem('Confirm / Update Setup', 'confirmSetupFromMenu')
     .addItem('Confirm All Expenses', 'confirmAllExpenses')
@@ -162,7 +168,7 @@ function initializeTracker_(blank) {
   setupSheet.getRange('A2:B7').setValues([
     ['Trip Name / Destination:', blank ? '' : 'Goa Vacation 2026'],
     ['Number of People:', blank ? MIN_PARTICIPANTS : 4],
-    ['Currency Symbol:', '₹'],
+    ['Base Currency (ISO or symbol):', '₹'],
     ['Setup Status:', 'Checking...'],
     ['Setup Confirmed?', false],
     ['Confirm / Update Setup', false]
@@ -189,6 +195,10 @@ function initializeTracker_(blank) {
   setupSheet.getRange(SETUP_UPDATE_CELL).setNote(
     'Optional checkbox trigger. You can also use the menu item: ' +
     'Expense Splitter > Confirm / Update Setup.'
+  );
+  setupSheet.getRange(SETUP_CURRENCY_CELL).setNote(
+    'Trip base currency: use an ISO code such as INR, USD, EUR or THB. ' +
+    '₹, $, €, £ and ฿ mean INR, USD, EUR, GBP and THB. Blank expense currencies inherit this value.'
   );
 
   const participantChoices = [];
@@ -318,7 +328,8 @@ function captureTrip_() {
   const sheet = ss.getSheetByName(SHEET_SETUP);
   const expenses = ss.getSheetByName(SHEET_EXPENSES);
   if (!sheet || !expenses) throw new Error('Initialize the tracker first.');
-  const inputRows = expenses.getRange(2, 1, MAX_DATA_ROWS, COL.SPLIT).getValues();
+  ensureExpenseLayout_();
+  const inputRows = expenses.getRange(2, 1, MAX_DATA_ROWS, COL.CURRENCY).getValues();
   // Keep interior blank rows and incomplete entries; omit only trailing empty rows.
   while (inputRows.length && inputRows[inputRows.length - 1].every(value => value === '')) {
     inputRows.pop();
@@ -344,7 +355,7 @@ function captureTrip_() {
 }
 
 function validateTrip_(trip) {
-  if (!trip || trip.format !== 'travel-expense-trip' || trip.schemaVersion !== TRIP_SCHEMA_VERSION) {
+  if (!trip || trip.format !== 'travel-expense-trip' || ![1, TRIP_SCHEMA_VERSION].includes(trip.schemaVersion)) {
     throw new Error('Unsupported trip JSON format or version.');
   }
   if (typeof trip.id !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(trip.id) ||
@@ -366,7 +377,7 @@ function validateTrip_(trip) {
   const validRows = (rows, width, maximum) => Array.isArray(rows) && rows.length <= maximum &&
     rows.every(row => Array.isArray(row) && row.length === width && row.every(validCell));
   if (!validRows(settings.roster, 3, MAX_PARTICIPANTS) || settings.roster.length !== MAX_PARTICIPANTS ||
-      !validRows(trip.expenses, COL.SPLIT, MAX_DATA_ROWS)) {
+      !validRows(trip.expenses, trip.schemaVersion === 1 ? COL.SPLIT : COL.CURRENCY, MAX_DATA_ROWS)) {
     throw new Error('Invalid roster or expenses; JSON supports 15 roster rows and 500 expense rows.');
   }
   return trip;
@@ -464,9 +475,10 @@ function restoreTrip_(trip) {
   sheet.getRange(ROSTER_START_ROW, 1, MAX_PARTICIPANTS, 3)
     .setValues(trip.setup.roster.map(row => row.map(decodeTripCell_)));
   if (trip.expenses.length) {
-    ss.getSheetByName(SHEET_EXPENSES).getRange(2, 1, trip.expenses.length, COL.SPLIT)
+    ss.getSheetByName(SHEET_EXPENSES).getRange(2, 1, trip.expenses.length, COL.CURRENCY)
       .clearDataValidations()
-      .setValues(trip.expenses.map(row => row.map(decodeTripCell_)));
+      .setValues(trip.expenses.map(row =>
+        (trip.schemaVersion === 1 ? [...row, ''] : row).map(decodeTripCell_)));
   }
   const validSetup = validateSetupStatus();
   sheet.getRange(SETUP_CONFIRM_CELL).setValue(trip.setup.confirmed && validSetup);
@@ -670,6 +682,102 @@ function getCurrencySymbol_() {
 
 function getCurrencyFormat_() {
   return `"${getCurrencySymbol_()}"#,##0.00`;
+}
+
+function currencyCode_(value) {
+  const text = String(value == null ? '' : value).trim();
+  const symbols = { '₹': 'INR', '$': 'USD', '€': 'EUR', '£': 'GBP', '฿': 'THB' };
+  const code = symbols[text] || text.toUpperCase();
+  if (!/^[A-Z]{3}$/.test(code)) {
+    throw new Error(`Currency '${text}' must be a three-letter ISO code or ₹, $, €, £, ฿.`);
+  }
+  return code;
+}
+
+function fxDate_(value, timeZone) {
+  let date;
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    date = Utilities.formatDate(value, timeZone, 'yyyy-MM-dd');
+  } else {
+    date = String(value || '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) {
+      throw new Error('Foreign currency requires a valid transaction date in column A.');
+    }
+  }
+  if (date > Utilities.formatDate(new Date(), timeZone, 'yyyy-MM-dd')) {
+    throw new Error('Foreign currency transaction date cannot be in the future.');
+  }
+  return date;
+}
+
+function convertFxMinor_(amountMinor, rate) {
+  // Round the decimal API rate once, avoiding binary floating-point half-cent errors.
+  const [coefficient, exponent = '0'] = String(rate).toLowerCase().split('e');
+  const decimals = (coefficient.split('.')[1] || '').length;
+  const shift = Number(exponent) - decimals;
+  let numerator = BigInt(amountMinor) * BigInt(coefficient.replace('.', ''));
+  let denominator = BigInt(1);
+  if (shift >= 0) numerator *= BigInt(10) ** BigInt(shift);
+  else denominator = BigInt(10) ** BigInt(-shift);
+  return Number((numerator * BigInt(2) + denominator) / (denominator * BigInt(2)));
+}
+
+function getFxRate_(from, to, date, state) {
+  const key = `FX_${from}_${to}_${date}`;
+  if (state.results.has(key)) {
+    const result = state.results.get(key);
+    if (result instanceof Error) throw result;
+    return result;
+  }
+  try {
+    const now = Date.now();
+    const cache = CacheService.getDocumentCache();
+    if (!state.properties) {
+      state.store = PropertiesService.getDocumentProperties();
+      state.properties = state.store.getProperties();
+    }
+    const cached = (cache && cache.get(key)) || state.properties[key];
+    let entry;
+    try { entry = JSON.parse(cached || 'null'); } catch (err) { entry = null; }
+    if (!entry || !Number.isFinite(entry.rate) || entry.rate <= 0 ||
+        !Number.isFinite(entry.expiresAt) || entry.expiresAt <= now || entry.expiresAt > now + FX_TTL_MS) {
+      if (!fxFetchAllowed_) {
+        throw new Error('FX rate unavailable. Use Enable Automatic Currency Conversion or Recalculate Live Expenses from the menu.');
+      }
+      const url = `https://api.frankfurter.dev/v2/rate/${from}/${to}?date=${date}`;
+      const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      if (response.getResponseCode() !== 200) {
+        throw new Error(`FX rate unavailable for ${from}/${to} on ${date} (HTTP ${response.getResponseCode()}).`);
+      }
+      const data = JSON.parse(response.getContentText());
+      if (!data || data.base !== from || data.quote !== to ||
+          !Number.isFinite(data.rate) || data.rate <= 0 ||
+          !/^\d{4}-\d{2}-\d{2}$/.test(data.date) || data.date > date) {
+        throw new Error(`Invalid FX response for ${from}/${to} on ${date}.`);
+      }
+      entry = { rate: data.rate, expiresAt: now + FX_TTL_MS };
+      // Bound persistent storage by removing expired FX entries, preserving other settings.
+      Object.keys(state.properties).filter(name => name.startsWith('FX_')).forEach(name => {
+        let old;
+        try { old = JSON.parse(state.properties[name]); } catch (err) { old = null; }
+        if (!old || old.expiresAt <= now) {
+          state.store.deleteProperty(name);
+          delete state.properties[name];
+        }
+      });
+      state.store.setProperty(key, JSON.stringify(entry));
+      state.properties[key] = JSON.stringify(entry);
+    }
+    if (cache) cache.put(key, JSON.stringify(entry),
+      Math.min(FX_CACHE_SECONDS, Math.max(1, Math.ceil((entry.expiresAt - now) / 1000))));
+    state.results.set(key, entry.rate);
+    return entry.rate;
+  } catch (err) {
+    const error = new Error(`Currency conversion failed: ${err.message}`);
+    state.results.set(key, error);
+    throw error;
+  }
 }
 
 /**
@@ -936,6 +1044,52 @@ function adjustRosterRows() {
 
 function onEdit(e) {
   if (!e || !e.range) return;
+  const limited = e.authMode === ScriptApp.AuthMode.LIMITED;
+  if (limited && PropertiesService.getDocumentProperties().getProperty('AUTOMATIC_FX_EDIT') ===
+      SpreadsheetApp.getActiveSpreadsheet().getId()) return;
+  const previous = fxFetchAllowed_;
+  fxFetchAllowed_ = !limited;
+  try {
+    handleEdit_(e);
+  } finally {
+    fxFetchAllowed_ = previous;
+  }
+}
+
+function enableAutomaticFx() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const exists = ScriptApp.getProjectTriggers().some(trigger =>
+    trigger.getHandlerFunction() === 'onAuthorizedEdit' && trigger.getTriggerSourceId() === ss.getId());
+  if (!exists) ScriptApp.newTrigger('onAuthorizedEdit').forSpreadsheet(ss).onEdit().create();
+  PropertiesService.getDocumentProperties().setProperty('AUTOMATIC_FX_EDIT', ss.getId());
+  ensureExpenseLayout_();
+  recalculateAll(true);
+  safeAlert('Automatic currency conversion enabled. Rates are fetched using the trigger owner’s Google account.');
+}
+
+function onAuthorizedEdit(e) {
+  if (!e || !e.range) return;
+  // Confirmation and archive actions already acquire their own document lock.
+  if (e.range.getSheet().getName() === SHEET_SETUP &&
+      [SETUP_CONFIRM_CELL, SETUP_UPDATE_CELL, SETUP_SAVE_CELL].includes(e.range.getA1Notation())) {
+    handleEdit_(e);
+    return;
+  }
+  const lock = LockService.getDocumentLock();
+  lock.waitLock(30000);
+  try {
+    handleEdit_(e);
+  } finally {
+    try {
+      SpreadsheetApp.flush();
+    } finally {
+      lock.releaseLock();
+    }
+  }
+}
+
+function handleEdit_(e) {
+  if (!e || !e.range) return;
 
   const range = e.range;
   const sheet = range.getSheet();
@@ -1008,7 +1162,7 @@ function onEdit(e) {
       validateSetupStatus();
 
       /*
-       * Immediately rebuild F onward so added participant columns appear
+       * Immediately rebuild G onward so added participant columns appear
        * even before the user uses the confirmation menu.
        */
       updateExpensesStructure();
@@ -1028,7 +1182,7 @@ function onEdit(e) {
 
       /*
        * Names must be reflected in Expenses headers immediately.
-       * This remains non-destructive for Expenses A:E.
+       * This remains non-destructive for Expenses A:F.
        */
       updateExpensesStructure();
       recalculateAll(true);
@@ -1048,10 +1202,10 @@ function onEdit(e) {
    * Generated participant columns are not inputs.
    */
   if (sheetName === SHEET_EXPENSES &&
-      row >= 2 &&
+      row + range.getNumRows() - 1 >= 2 &&
       row <= MAX_DATA_ROWS + 1 &&
       col >= COL.DATE &&
-      col <= COL.SPLIT) {
+      col <= COL.CURRENCY) {
     recalculateAll(false);
   }
 }
@@ -1060,12 +1214,17 @@ function onEdit(e) {
    EXPENSE SHEET STRUCTURE
    ========================================================= */
 
+function ensureExpenseLayout_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
+  if (sheet && sheet.getRange(1, COL.CURRENCY).getValue() !== 'Currency') updateExpensesStructure();
+}
+
 /**
  * Rebuilds generated participant columns and moves the summary table.
  *
  * Safety:
- * - Does not delete or clear Expenses A:E.
- * - Clears only generated areas from F through the maximum possible summary end.
+ * - Does not delete or clear Expenses A:F.
+ * - Clears only generated areas from G through the maximum possible summary end.
  * - Existing expense data remains untouched.
  */
 function updateExpensesStructure() {
@@ -1074,6 +1233,12 @@ function updateExpensesStructure() {
   const setupSheet = ss.getSheetByName(SHEET_SETUP);
 
   if (!sheet || !setupSheet) return false;
+
+  // Older trackers used F for generated values; discard that output before adding currency input.
+  if (sheet.getRange(1, COL.CURRENCY).getValue() !== 'Currency') {
+    sheet.getRange(1, COL.CURRENCY, MAX_DATA_ROWS + 15, 1)
+      .breakApart().clearContent().clearFormat().clearDataValidations();
+  }
 
   const participantCount = Number(
     setupSheet.getRange(SETUP_NUM_PEOPLE_CELL).getValue()
@@ -1111,7 +1276,7 @@ function updateExpensesStructure() {
   /*
    * Clear all old generated participant output and old summaries.
    *
-   * Starts at F, so A:E expense input is never cleared.
+   * Starts at G, so A:F expense input is never cleared.
    * This also removes stale headings for people who were removed.
    */
   const generatedStartCol = FIRST_PERSON_COL;
@@ -1138,6 +1303,7 @@ function updateExpensesStructure() {
     'Amount',
     'Paid By',
     'Split Among',
+    'Currency',
     ...names
   ];
 
@@ -1176,7 +1342,16 @@ function updateExpensesStructure() {
 
   sheet
     .getRange(2, COL.AMOUNT, MAX_DATA_ROWS, 1)
-    .setNumberFormat(getCurrencyFormat_());
+    .setNumberFormat('#,##0.00');
+
+  sheet.getRange(2, COL.SPLIT, MAX_DATA_ROWS, 1)
+    .clearDataValidations().setNumberFormat('@')
+    .setNote('Equal: All, blank, or Rahul, Neha. Percentages: Rahul 30, Neha 70. ' +
+      'Exact amounts in row currency, by roster position: 400, 500, 100.');
+  sheet.getRange(2, COL.CURRENCY, MAX_DATA_ROWS, 1)
+    .clearDataValidations().setNumberFormat('@')
+    .setNote('Blank inherits Setup!B4. Enter a foreign ISO code such as USD, EUR or THB. ' +
+      'Historical conversion requires a date in A and Enable Automatic Currency Conversion from the menu.');
 
   /*
    * Participant columns are calculated output only.
@@ -1201,6 +1376,7 @@ function updateExpensesStructure() {
   sheet.setColumnWidth(COL.AMOUNT, 105);
   sheet.setColumnWidth(COL.PAID_BY, 120);
   sheet.setColumnWidth(COL.SPLIT, 180);
+  sheet.setColumnWidth(COL.CURRENCY, 100);
 
   for (let column = participantStartCol;
        column <= participantEndCol;
@@ -1283,12 +1459,84 @@ function parseIncluded_(splitValue, roster) {
   return people;
 }
 
+function allocateWeightedMinor_(amountMinor, weights) {
+  const total = weights.reduce((sum, item) => sum + item.weight, 0);
+  const sorted = [...weights].sort((a, b) => a.person.id - b.person.id);
+  const allocations = new Map();
+  let allocated = 0;
+  sorted.forEach(item => {
+    const share = Number(BigInt(amountMinor) * BigInt(item.weight) / BigInt(total));
+    allocations.set(item.person.id, share);
+    allocated += share;
+  });
+  let remainder = amountMinor - allocated;
+  sorted.filter(item => item.weight > 0).forEach(item => {
+    if (remainder > 0) {
+      allocations.set(item.person.id, allocations.get(item.person.id) + 1);
+      remainder--;
+    }
+  });
+  return allocations;
+}
+
+function parseSplitAmong_(splitValue, roster, amountMinor, sourceAmountMinor = amountMinor) {
+  const value = String(splitValue == null ? '' : splitValue).trim();
+  const parts = value.split(',').map(part => part.trim());
+  const byName = new Map(roster.map(person => [person.name.toLocaleLowerCase(), person]));
+  const exact = /^\d+(?:\.\d{1,2})?(?:\s*,\s*\d+(?:\.\d{1,2})?)*$/;
+  const percentage = /^(.+?)\s+(\d+(?:\.\d{1,4})?)\s*%?$/;
+  if (value && exact.test(value)) {
+    if (parts.length > roster.length) throw new Error('Exact split has more positions than roster members.');
+    const weights = parts.map((part, index) => ({ person: roster[index], weight: toMinor_(part) }));
+    const total = weights.reduce((sum, item) => sum + item.weight, 0);
+    if (!Number.isSafeInteger(total) || weights.some(item => !Number.isSafeInteger(item.weight))) {
+      throw new Error('Exact split exceeds the safe integer range.');
+    }
+    if (total !== sourceAmountMinor) {
+      throw new Error(`Exact split total (${fromMinor_(total)}) does not match total bill (${fromMinor_(sourceAmountMinor)})`);
+    }
+    return {
+      mode: 'exact', included: weights.filter(item => item.weight > 0).map(item => item.person),
+      allocations: allocateWeightedMinor_(amountMinor, weights)
+    };
+  }
+  // Prefer a complete name match, so roster names such as "Person 4" remain usable.
+  const namedEqual = !value || value.toLocaleLowerCase() === 'all' ||
+    parts.every(part => !part || byName.has(part.toLocaleLowerCase()));
+  if (!namedEqual && parts.some(part => percentage.test(part))) {
+    const seen = new Set();
+    const weights = parts.map(part => {
+      const match = percentage.exec(part);
+      if (!match) throw new Error('Use name-percentage pairs for every split entry.');
+      const person = byName.get(match[1].trim().toLocaleLowerCase());
+      if (!person) throw new Error(`Split name '${match[1].trim()}' is not a roster member.`);
+      if (seen.has(person.id)) throw new Error(`Duplicate split percentage for '${person.name}'.`);
+      seen.add(person.id);
+      const weight = Math.round(Number(match[2]) * 10000);
+      if (!Number.isSafeInteger(weight) || weight > 1000000) throw new Error('Each split percentage must be between 0 and 100.');
+      return { person, weight };
+    });
+    const total = weights.reduce((sum, item) => sum + item.weight, 0);
+    if (total !== 1000000) throw new Error(`Split percentages total ${total / 10000}%, must equal 100%`);
+    return {
+      mode: 'percentage', included: weights.filter(item => item.weight > 0).map(item => item.person),
+      allocations: allocateWeightedMinor_(amountMinor, weights)
+    };
+  }
+  const included = parseIncluded_(value, roster);
+  if (!included.length) throw new Error('Split Among has no valid roster member.');
+  const unknown = value && value.toLocaleLowerCase() !== 'all' &&
+    parts.find(part => part && !byName.has(part.toLocaleLowerCase()));
+  if (unknown) throw new Error(`Split name '${unknown}' is not a roster member.`);
+  return { mode: 'equal', included, allocations: allocateEqualMinor_(amountMinor, included) };
+}
+
 /* =========================================================
    LEDGER CONSTRUCTION
    ========================================================= */
 
 /**
- * Builds an exact financial ledger only from Expenses columns A:E.
+ * Builds an exact financial ledger only from Expenses columns A:F.
  */
 function buildLedger_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1357,8 +1605,12 @@ function buildLedger_() {
     };
   }
 
+  ensureExpenseLayout_();
+  const baseCurrency = getCurrencySymbol_();
+  const fxState = { results: new Map() };
+
   const data = sheet
-    .getRange(2, 1, lastRow - 1, COL.SPLIT)
+    .getRange(2, 1, lastRow - 1, COL.CURRENCY)
     .getValues();
 
   data.forEach((row, index) => {
@@ -1373,7 +1625,7 @@ function buildLedger_() {
       return;
     }
 
-    const amountMinor = toMinor_(row[COL.AMOUNT - 1]);
+    const sourceAmountMinor = toMinor_(row[COL.AMOUNT - 1]);
     const payerText = String(
       row[COL.PAID_BY - 1] || ''
     ).trim();
@@ -1381,7 +1633,7 @@ function buildLedger_() {
     /*
      * A partly entered row is ignored during live calculations.
      */
-    if (!amountMinor || !payerText) {
+    if (!sourceAmountMinor || !payerText) {
       rowRecords.set(rowNumber, null);
       return;
     }
@@ -1398,23 +1650,35 @@ function buildLedger_() {
       return;
     }
 
-    const included = parseIncluded_(
-      row[COL.SPLIT - 1],
-      roster
-    );
-
-    if (!included.length) {
-      errors.push(
-        `Row ${rowNumber}: Split Among has no valid roster member.`
-      );
+    let amountMinor = sourceAmountMinor;
+    let split;
+    let sourceCurrency = baseCurrency;
+    let exchangeRate = 1;
+    try {
+      if (!Number.isSafeInteger(sourceAmountMinor)) throw new Error('Amount exceeds the safe integer range.');
+      // Validate against the entered bill before requesting any foreign rate.
+      split = parseSplitAmong_(row[COL.SPLIT - 1], roster, sourceAmountMinor);
+      const currencyText = String(row[COL.CURRENCY - 1] || '').trim();
+      if (currencyText) {
+        sourceCurrency = currencyCode_(currencyText);
+        const targetCurrency = currencyCode_(baseCurrency);
+        if (sourceCurrency !== targetCurrency) {
+          const date = fxDate_(row[COL.DATE - 1], ss.getSpreadsheetTimeZone());
+          exchangeRate = getFxRate_(sourceCurrency, targetCurrency, date, fxState);
+          amountMinor = convertFxMinor_(sourceAmountMinor, exchangeRate);
+          if (!Number.isSafeInteger(amountMinor) || amountMinor <= 0) {
+            throw new Error('Converted amount must be at least one minor unit and within the safe integer range.');
+          }
+          split = parseSplitAmong_(row[COL.SPLIT - 1], roster, amountMinor, sourceAmountMinor);
+        }
+      }
+      if (!Number.isSafeInteger(totalMinor + amountMinor)) throw new Error('Trip total exceeds the safe integer range.');
+    } catch (err) {
+      errors.push(`Row ${rowNumber}: ${err.message}`);
       rowRecords.set(rowNumber, null);
       return;
     }
-
-    const allocations = allocateEqualMinor_(
-      amountMinor,
-      included
-    );
+    const { included, allocations } = split;
 
     let allocationSum = 0;
 
@@ -1465,6 +1729,10 @@ function buildLedger_() {
     const record = {
       row: rowNumber,
       amountMinor,
+      sourceAmountMinor,
+      sourceCurrency,
+      exchangeRate,
+      splitMode: split.mode,
       paidById: payer.id,
       includedIds: included.map(person => person.id),
       allocations,
@@ -2058,19 +2326,6 @@ function updateSendReportsSheet(existingLedger) {
     return;
   }
 
-  if (!isExpensesConfirmed()) {
-    sheet.getRange('A1:F1')
-      .merge()
-      .setValue(
-        '⚠️ Expenses are not confirmed. Use Setup!B6 or Expense Splitter > Confirm / Update Setup.'
-      )
-      .setBackground(COLOR.WARN_BG)
-      .setFontColor(COLOR.WARN_TX)
-      .setFontWeight('bold');
-
-    return;
-  }
-
   if (ledger.errors.length) {
     sheet.getRange('A1:F1')
       .merge()
@@ -2079,6 +2334,19 @@ function updateSendReportsSheet(existingLedger) {
       )
       .setBackground(COLOR.RED_BG)
       .setFontColor(COLOR.RED_TX)
+      .setFontWeight('bold');
+
+    return;
+  }
+
+  if (!isExpensesConfirmed()) {
+    sheet.getRange('A1:F1')
+      .merge()
+      .setValue(
+        '⚠️ Expenses are not confirmed. Use Setup!B6 or Expense Splitter > Confirm / Update Setup.'
+      )
+      .setBackground(COLOR.WARN_BG)
+      .setFontColor(COLOR.WARN_TX)
       .setFontWeight('bold');
 
     return;

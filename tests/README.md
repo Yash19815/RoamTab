@@ -10,15 +10,21 @@ node --test tests/optimal-settlements.test.cjs
 node --test tests/pdf-report.test.cjs
 node --test tests/trip-records.test.cjs
 node --test tests/trip-json-dialog.test.cjs
+node --test tests/splits-fx.test.cjs
+node --test tests/pre-push.test.cjs
 ```
 
 No dependencies, Google credentials, live spreadsheets, or email access are required.
+
+Hook tests additionally require Git for Windows Bash at `C:\Program Files\Git\bin\bash.exe` on Windows, or `/bin/bash` elsewhere. They run the production hook with only its two deployment paths substituted, temporary directories with spaces and parentheses, and mocked commands. They check copy/verification failures, clasp exits and skipped uploads, working directory, and stdin isolation. They do not upload to Google or modify the real target repository. See [hook installation and live verification](../docs/pre-push-setup.md).
 
 ## Scope
 
 - Execute the actual `Code.js` using `node:vm`; production functions are neither copied nor replaced.
 - Mock spreadsheet reads and writes with fresh factory data for each test. Formatting methods are inert.
 - Check integer minor-unit conversion, equal shares, deterministic remainder allocation, and amounts smaller than participant counts.
+- Check positional exact and named percentage splits, strict totals, unknown names, duplicate percentages, zero weights, decimal percentages, and seeded 2–15-person trips.
+- Check historical FX in all split modes, exact decimal-rate rounding, 500 foreign rows with 2 and 15 people, date/timezone validation, per-pair/date caching, six-hour cache eviction, fixed 24-hour persistent expiry, API failures, simple/authorized edits, layout migration, and version 1/2 trip restoration.
 - Check totals paid and consumed, per-person net balances, case-insensitive subgroup names, duplicate selections, incomplete rows, invalid payers, and the 500-row input limit.
 - Verify signed expense cells and live summary values written by `recalculateAll()`.
 - Verify settlements contain positive integer amounts, use valid debtor/creditor directions, clear each balance exactly, and preserve input balances.
@@ -52,12 +58,14 @@ Ungrouped greedy matching **does not guarantee the minimum number of transfers**
 
 The greedy helper alone generates four transfers. The production exact solver uses three: Alice pays Person 5 ₹8; Bob and Cara pay Person 4 ₹7 and ₹5. The suite checks both algorithms and recreates the balances from expense rows. Greedy-only tests preserve the baseline limitation; exact-solver tests require the globally minimum count.
 
-Remainders go to included participants in ascending ID order, not necessarily to the payer. Unknown subgroup names are currently ignored if at least one valid name remains; a test documents this behavior.
+Remainders go to participants with positive split weights in ascending ID order, not necessarily to the payer. Unknown subgroup names now reject the row even when another name is valid. Exact splits validate totals in the source currency before requesting FX; converted allocations reconcile to the rounded base amount.
 
 ## Boundaries
 
 The test oracle exhaustively partitions balances into zero-sum groups and is limited to 10 nonzero balances. Production instead uses an `O(n × 2^n)` prefix DP for up to 15 people, reconstructs the optimal groups, and uses the greedy helper only within those groups. It rejects invalid balances and aggregate magnitudes outside JavaScript's safe integer range. No automated coverage percentage is enforced.
 
 These tests do not validate Google Sheets trigger delivery, real formatting, authorization, PDF conversion, or actual email delivery. PDF instruction HTML and email requests are inspected through mocked service boundaries. Local benchmark timings do not establish Apps Script execution time. The suite does not establish support for negative expenses, arbitrary-precision amounts, or amounts beyond JavaScript's safe integer range.
+
+FX tests mock CacheService, document properties, ScriptApp triggers, and Frankfurter v2 responses. No live rate request is sent. In a disposable sheet, check the Currency F input and participant outputs from G, enable automatic conversion, edit dated foreign expenses from desktop/mobile, and confirm authorization and trigger delivery. Verify a weekend's prior observation, an unsupported pair error, and zero-sum balances. The ledger uses two decimal places for all currencies. A cold lookup requires network time; local timings do not establish Apps Script performance for 500 distinct uncached pairs/dates.
 
 Archive tests simulate spreadsheet writes, locks, confirmation dialogs, and HTML template preparation. Dialog tests execute the real HTML script with simulated DOM and Apps Script boundaries, checking Blob contents, upload confirmation, file reading, and success/error handling. Verify browser download/file import and actual checkbox trigger delivery in a disposable spreadsheet. Load a saved trip after New Trip and compare dates, roster, raw expense rows, and balances. Confirm cancelled New Trip/Delete actions preserve data and saved Records survive initialization. The JSON schema restores input values, not formulas or historical email delivery statuses.

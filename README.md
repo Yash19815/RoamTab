@@ -28,7 +28,9 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 ## 🌟 Why Use This Over Splitwise?
 
 * **Self-Hosted in Google Sheets:** No application subscription or ads. Supports up to 15 people and 500 expense rows per tracker; Google service quotas still apply.
-* **Instant Live Calculations:** Per-person split columns compute the moment you type an expense — no confirm step, no waiting, just like a native spreadsheet formula.
+* **Live Calculations:** Per-person net columns update on expense edits. Local expenses need no API call; foreign rates are fetched on the first lookup and reused for 24 hours.
+* **Flexible Splits:** Use positional exact amounts, named percentages, or equal shares in the same Split Among cell.
+* **Historical Currency Conversion:** Blank row currencies inherit the trip base currency. Override with an ISO code to convert using the transaction date.
 * **Live Summary Panel:** **Send Reports!H:K** always shows total group spending, each person's paid amount, consumed share, and net balance. It updates while editing expenses, even before confirmation.
 * **Exact Settlement Engine:** On confirmation, uses subset dynamic programming to find the fewest possible transfers for up to 15 people. Every settlement row explains the outstanding debt, credit, and payment amount.
 * **Automated PDF Email Statements:** Generates clean, personalized HTML/PDF expense reports — each person receives only the expenses that involve them — dispatched via Gmail in one click.
@@ -48,7 +50,7 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 
 <img src="assets/Expense%20Tab.png" alt="Expenses tab showing shared expenses, individual balances, and the live summary" width="100%" />
 
-*Sheet screenshots show the previous summary placement. The current version keeps the live summary in **Send Reports!H:K**, separate from expense entry.*
+*Sheet screenshots show the previous layout. The current version adds Currency in **Expenses!F**, starts participant outputs at **G**, and keeps the live summary in **Send Reports!H:K**.*
 
 ### 3. Simplified Settlements
 
@@ -110,11 +112,11 @@ Saved **Records** survive initialization. Use **New Trip** for the next journey:
 
 ### Daily workflow
 
-1. Fill in the trip name, participant count, currency symbol, and unique participant names on **Setup**. Emails are optional. Use names without commas so subgroup selections remain unambiguous.
+1. Fill in the trip name, participant count, base currency, and unique participant names on **Setup**. Emails are optional. Use names without commas so subgroup selections remain unambiguous.
 2. Select **Expense Splitter → Confirm / Update Setup**, or tick `Setup!B6` / `Setup!B7` on mobile.
 
     Adding names below the active roster automatically raises **Number of People**, up to 15. You can also change `Setup!B3` directly. Reducing the count deactivates extra rows but preserves their names and emails; raising it restores those entries.
-3. Enter expenses in **Expenses!A2:E501**. Choose a payer and leave **Split Among** blank for everyone, or enter names such as `Rahul, Neha`.
+3. Enter expenses in **Expenses!A2:F501**. Choose a payer and a [split](#three-split-modes). Leave Currency blank for the base currency. For foreign expenses, first select **Enable Automatic Currency Conversion** from the desktop menu and authorize once; then enter the transaction date and an ISO code in F.
 4. When ready to review, select **Confirm All Expenses** and open **Send Reports**. On mobile, tick `Setup!B6`; if already checked, clear it and tick it again to refresh.
 5. To send statements, use **3. Send PDF Reports via Email** on desktop and grant email permission if requested. Review delivery status in **Send Reports**.
 6. Save the completed trip with **Save Trip** or the `Setup!E6` checkbox. Use **New Trip** to reuse this spreadsheet.
@@ -132,7 +134,7 @@ Configure the trip and the group:
 |------|---------|---------|
 | `Setup!B2` | Trip Name / Destination | Goa Vacation 2026 |
 | `Setup!B3` | Number of Participants (dropdown 2–15) | 4 |
-| `Setup!B4` | Currency Symbol | ₹ |
+| `Setup!B4` | Base currency: ISO code or supported symbol | ₹ (INR) |
 | `Setup!B5` | Setup Status (auto-validated) | — |
 | `Setup!B6` | **Setup Confirmed?** checkbox; also gates settlement/report output | ☐ FALSE |
 | `Setup!B7` | **Confirm / Update Setup** checkbox action; resets after use | ☐ FALSE |
@@ -143,18 +145,19 @@ Configure the trip and the group:
 > Emails are **optional** — only people with an email address receive PDF reports; everyone else is cleanly skipped and logged.
 
 ### 2️⃣ Expenses
-Enter expenses in columns **A–E**; everything else is computed live:
+Enter expenses in columns **A–F**; everything else is computed live:
 
 | Column | Field | Type |
 |--------|-------|------|
 | A | Date | Date-validated (dd-mmm-yyyy) |
 | B | Description | Free text |
-| C | Amount | Currency-formatted |
+| C | Amount | Positive amount in the row currency; up to two decimal places |
 | D | Paid By | Dropdown, auto-filled from roster |
-| E | Split Among | `All`, blank, or comma-separated names |
-| F+ | *One column per person* | Net for that expense: amount paid minus personal share; + collect / − owe |
+| E | Split Among | Exact amounts, named percentages, `All`, blank, or comma-separated names |
+| F | Currency | Blank inherits Setup!B4; use an ISO code for an override |
+| G+ | *One column per person* | Net in base currency: amount paid minus personal share; + collect / − owe |
 
-The live summary is in **Send Reports!H:K**. Expenses contains input columns A:E and participant net columns from F onward. Confirming an update removes the previous summary from Expenses without clearing expense inputs.
+The live summary is in **Send Reports!H:K**. Expenses contains input columns A:F and participant net columns from G onward. Recalculation or setup confirmation upgrades older trackers automatically: A:E inputs survive, the former generated F output becomes blank Currency input, and participant outputs are rebuilt from G. Later rebuilds preserve F currencies.
 
 **LIVE SUMMARY example (Send Reports):** Priya pays a ₹10,000 bill split equally among four people. Total Spent (Everyone) is ₹10,000:
 
@@ -184,7 +187,7 @@ Each saved trip occupies one row. Columns A:E show the trip ID, name, UTC save t
 - **Delete:** select a saved trip row and choose **Delete Selected Trip**. Confirm to remove only that archive. Active inputs and downloaded files remain available; saving active inputs again creates a new archive if its record was deleted.
 - **New trip:** choose **New Trip** and confirm. Current inputs are saved first; trip name, participant names, expenses, and confirmation are cleared. The blank canvas starts with two participant slots and ₹ currency. Saved Records remain available.
 
-Snapshots include trip name, currency, participant count, all 15 roster slots (including inactive names and emails), confirmation, and all 500 supported expense input rows in A:E. Draft entries, interior blank rows, subgroup selections, and actual date values survive a round trip. Only trailing empty rows are omitted. Formulas are saved as their current values. Derived output is recalculated on load; email delivery statuses are not retained.
+Snapshots include trip name, base currency, participant count, all 15 roster slots (including inactive names and emails), confirmation, and all 500 supported expense input rows in A:F. Draft entries, interior blank rows, all split modes, row currencies, and actual date values survive a round trip. Only trailing empty rows are omitted. Formulas are saved as their current values. JSON schema version 2 adds row currencies; version 1 files still load with blank inherited currencies. Derived output is recalculated on load; FX cache entries and email delivery statuses are not exported. Loading historical trips can therefore fetch rates again.
 
 Incomplete names and draft expenses can be saved. Participant count must still be 2–15. Invalid or unsupported JSON is rejected before replacing inputs. Loading requires the same spreadsheet timezone as the saved trip, preserving date instants and calendar display. JSON contains participant emails and expense details, so share files with the same care as the spreadsheet.
 
@@ -198,15 +201,33 @@ On mobile, `Setup!E6` saves to Records. File download/import and record-manageme
 
 - Supports **2–15 participants** and **500 expense rows**, starting at row 2. Rows after 501 are not included in calculations.
 - Enter positive amounts with up to two decimal places. Empty/incomplete rows and non-positive or non-numeric amounts are ignored; refunds and negative expenses are not supported.
-- Names match without case sensitivity or surrounding spaces. Duplicate subgroup names count once. Unknown subgroup names are ignored if a valid name remains; a split with no valid names blocks settlement.
-- The currency field changes the displayed symbol only; it does not convert amounts between currencies.
+- Names match without case sensitivity or surrounding spaces. Duplicate equal-split names count once. Unknown names and duplicate percentage entries produce row errors and block settlement and PDF sending.
+- All currencies currently use two decimal places for ledger units, including codes whose standard minor-unit precision differs. Use ISO codes for ambiguous symbols; `$` means USD.
 - Sending reports is manual. Missing or invalid email addresses are skipped. Running the send action again sends another email to every valid address, including participants already marked **Sent**.
 - PDF conversion and email sending use your Google account's [Apps Script quotas](https://developers.google.com/apps-script/guides/services/quotas).
 
-### Equal & Partial Splits
+<a id="three-split-modes"></a>
+### Three Split Modes
+
+All three modes use **Expenses!E**, with no separate split columns:
+
+* **Positional exact:** `400, 500, 100` charges roster positions 1, 2, and 3 those amounts. Remaining people receive zero shares. Enter amounts in the row currency; their sum must match C before conversion. A mismatch produces `Row X: Exact split total (1000) does not match total bill (1200)`. More amounts than active roster members are rejected. Roster reordering changes positional assignments.
+* **Named percentages:** `Rahul 30, Neha 40, Amit 30` assigns 30%, 40%, and 30%. An optional `%` suffix and up to four decimal places are supported. Percentages must be nonnegative and sum to exactly 100%; otherwise, for example, `Row X: Split percentages total 90%, must equal 100%`. Unlisted people receive zero shares.
 * **"All" or blank Split Among:** cost splits equally across the whole roster.
 * **Comma-separated names** (`Rahul, Neha`): cost splits only within that subgroup.
-* **Remainder handling:** leftover whole paisa/cents are distributed one at a time by ascending participant ID among the included people. Shares add up to the original amount, and group balances reconcile to zero.
+* **Remainder handling:** percentage and equal shares round down to minor units, then distribute leftover units by ascending participant ID among people with a positive share. Exact foreign splits preserve the entered proportions after conversion and reconcile the same way. Allocations always equal the converted bill, and group balances sum to zero. Zero-weight participants never receive a remainder.
+
+### Historical FX Conversion
+
+Set **Setup!B4** to an ISO code such as `INR`, `USD`, `EUR`, `GBP`, or `THB`. Supported symbol aliases are `₹`, `$`, `€`, `£`, and `฿`, respectively. Blank row currencies inherit B4, and explicit matches to the base currency bypass FX services entirely. Other custom display symbols continue to work for local-only trips; foreign conversion requires a recognized base symbol or ISO code.
+
+For a foreign expense, enter its original amount in C, transaction date in A, and currency code in F. Codes match without case sensitivity. RoamTab queries the [Frankfurter v2 historical pair endpoint](https://frankfurter.dev/) using the spreadsheet's calendar date and converts into the base currency before allocating shares. API calls require no key or external package. The first lookup requires a network request; repeated rows with the same pair and date share one request per recalculation. Frankfurter may return an earlier available observation on non-publication days; RoamTab accepts it and never substitutes a latest-rate request. Missing, invalid, future, or unavailable foreign dates and unsupported pairs produce row errors instead of an assumed rate.
+
+Rates use keys such as `FX_USD_INR_2026-01-09`. [CacheService permits at most six hours](https://developers.google.com/apps-script/reference/cache/cache), so document properties retain each rate with a fixed 24-hour expiry. Cache misses repopulate from that backing without another API request. Expired backing entries are removed during fresh fetches. Decimal-rate conversion rounds once to base minor units before any split; totals, settlements, and PDF amounts all use the base currency.
+
+Choose **Expense Splitter → Enable Automatic Currency Conversion** once from desktop Google Sheets and grant the requested permissions. This installs an authorized edit trigger because [simple triggers cannot call services requiring authorization](https://developers.google.com/apps-script/guides/triggers). One designated account should enable it for the spreadsheet; that account owns the trigger and consumes its fetch quota. Once enabled, edits from mobile also recalculate automatically. Repeating the action from the same account repairs a deleted trigger without creating duplicates. If the trigger owner loses access or authorization, use the menu action again from the designated account. Without an installed trigger, local rows and warm cached FX rates still recalculate; uncached foreign rows show an actionable error. **2. Recalculate Live Expenses** can fetch rates manually after authorization.
+
+Split and FX errors appear in **Send Reports!A1** even before confirmation. Invalid rows are excluded from live totals, and settlement/PDF sending remains blocked until all errors are resolved.
 
 ### Settlement Engine (Exact Minimum Transfers)
 The solver finds the largest number of independent groups whose net balances sum to zero. It then settles each group separately. If there are `n` people with nonzero balances and `g` groups, the minimum number of transfers is `n - g`.
@@ -236,6 +257,7 @@ The exact solver uses `O(n × 2^n)` time and `O(2^n)` memory, with at most 32,76
 |-----------|--------|
 | `1. Initialize / Reset Tracker` | Clears and rebuilds the three active tracker sheets; preserves Records |
 | `2. Recalculate Live Expenses` | Recalculates expense nets and Send Reports live summary; settlement output requires confirmation |
+| `Enable Automatic Currency Conversion` | Authorizes and installs an edit trigger for historical FX lookups; refreshes the ledger |
 | `Confirm / Update Setup` | Validates the roster, rebuilds generated columns, and confirms setup |
 | `Confirm All Expenses` | Publishes balances + settlement plan (assignable to a drawing button) |
 | `Re-open for Editing (Unconfirm)` | Withdraws the report view |
@@ -276,7 +298,9 @@ clasp open-script
 
 The first commands check syntax and run local tests. `clasp status` lists upload files; `clasp push` uploads to the configured project; `clasp open-script` opens its editor. The upload should contain `Code.js`, `TripJson.html`, and `appsscript.json`; `.claspignore` excludes tests and preview artifacts. Clasp authentication authorizes uploads; spreadsheet and email permissions are granted separately when running the script.
 
-Run `setup()` only when initializing a blank development spreadsheet. For subsequent code updates, reload the sheet and use **2. Recalculate Live Expenses** or **Confirm All Expenses** as needed. Edit-trigger behavior, actual PDF conversion, and email delivery require checks in Google Sheets.
+Run `setup()` only when initializing a blank development spreadsheet. For subsequent code updates, reload the sheet and use **2. Recalculate Live Expenses** or **Confirm All Expenses** as needed. For automatic foreign conversion, select **Enable Automatic Currency Conversion** once and authorize the edit trigger and external requests. Edit-trigger behavior, actual PDF conversion, and email delivery require checks in Google Sheets.
+
+For local Windows push automation, use [`scripts/pre-push`](scripts/pre-push) and the [Git Bash/PowerShell setup and verification guide](docs/pre-push-setup.md). The hook overwrites `roamtab-template/Code.js` from this working tree and runs `clasp push` in that repository before allowing the source Git push. It aborts on copy or upload failures. Install it separately in each clone; the guide covers PATH, authentication, and the upload behavior. `.claspignore` excludes local automation scripts from source-project uploads.
 
 ---
 
@@ -339,6 +363,8 @@ See [`tests/README.md`](tests/README.md) for focused commands and limitations. `
 
 Trip archive tests cover 15 participants and all 500 expenses across JSON parts, draft rows, dates, inactive roster entries, repeated saves, confirmation controls, save-before-replace behavior, import validation, deletion confirmation, and formula-like text. In a disposable spreadsheet, also verify `Setup!E6`, a real browser download/import, and cancelled New Trip/Delete actions. Check the new Save Trip control beside the existing setup checkboxes.
 
+Split/FX tests cover exact and percentage validation, deterministic remainders, half-cent conversion, 500 foreign rows with 2 and 15 participants, cache eviction and 24-hour expiry, API failures, timezone dates, column migration, schema versions 1/2, and authorized versus simple edits. Fetch responses and Google service boundaries are mocked. In a disposable spreadsheet, enable the FX trigger, enter a dated USD expense against INR, and verify live nets, cached recalculation, errors before confirmation, and saved-trip restoration. Capture updated sheet screenshots after that live check.
+
 ---
 
 ## 🔧 Troubleshooting
@@ -349,6 +375,7 @@ Trip archive tests cover 15 participants and all 500 expenses across JSON parts,
 | Expense rows missing from calculations | Check positive Amount + Paid By, valid names, and that the row is between 2 and 501 |
 | Reports say unconfirmed or show old results | Reconfirm setup, then select **Confirm All Expenses** to rebuild the report |
 | Unknown payer after changing the roster | Update old names in **Paid By** and **Split Among**, then reconfirm |
+| FX rate unavailable on edit | Select **Enable Automatic Currency Conversion** or **2. Recalculate Live Expenses** and authorize; check transaction date and currency codes |
 | Menu missing after a code update | Reload the spreadsheet; run `onOpen()` in Apps Script if necessary |
 | Formatting or generated columns look wrong | Use **Confirm / Update Setup**, then **2. Recalculate Live Expenses** |
 | Quota or authorization error | Read the Apps Script execution error, check account quotas, and authorize the required service |

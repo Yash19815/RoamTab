@@ -108,11 +108,11 @@ describe('Ledger calculations from spreadsheet input', () => {
     assertLedgerConservesMoney(ledger);
   });
 
-  it('documents current behavior: unknown subgroup names are ignored when some names are valid', () => {
+  it('rejects unknown subgroup names even when some names are valid', () => {
     const { app } = loadAppsScript({ expenses: [getMockExpense({ amount: 12, split: 'Alice, Typo' })] });
     const ledger = app.buildLedger_();
-    assert.deepEqual([...ledger.spent.values()], [1200, 0, 0]);
-    assertLedgerConservesMoney(ledger);
+    assert.deepEqual([...ledger.spent.values()], [0, 0, 0]);
+    assert.match(ledger.errors[0], /Split name 'Typo' is not a roster member/);
   });
 
   it('leaves no debt for an expense paid and consumed by the same person', () => {
@@ -155,13 +155,13 @@ describe('Ledger calculations from spreadsheet input', () => {
     });
   }
 
-  it('reads only input columns A:E, capped at 500 expense rows', () => {
+  it('reads only input columns A:F, capped at 500 expense rows', () => {
     const expenses = Array.from({ length: 501 }, () => getMockExpense({ amount: 0.01 }));
     const { app, sheet } = loadAppsScript({ expenses, lastRow: 1000 });
     const ledger = app.buildLedger_();
     assert.equal(ledger.expenses.length, 500);
     assert.equal(ledger.totalMinor, 500);
-    assert.deepEqual(sheet.reads, [{ row: 2, col: 1, height: 500, width: 5 }]);
+    assert.deepEqual(sheet.reads, [{ row: 2, col: 1, height: 500, width: 6 }]);
     assertLedgerConservesMoney(ledger);
   });
 
@@ -208,7 +208,7 @@ describe('Calculated values written to the spreadsheet', () => {
       getMockExpense({ amount: 30, payer: 'Cara', split: 'Alice, Bob' })
     ] });
     app.recalculateAll();
-    assert.deepEqual(plain(sheet.getRange(2, 6, 3, 3).getValues()), [
+    assert.deepEqual(plain(sheet.getRange(2, 7, 3, 3).getValues()), [
       [80, -40, -40], [0, 30, -30], [-15, -15, 30]
     ]);
     // Participant nets remain in Expenses; live totals appear in Send Reports!H:K.
@@ -220,9 +220,9 @@ describe('Calculated values written to the spreadsheet', () => {
 
   it('clears stale calculated cells for an incomplete expense row', () => {
     const { app, sheet } = loadAppsScript({ expenses: [getMockExpense({ payer: '' })] });
-    sheet.getRange(2, 6, 1, 3).setValues([[99, -50, -49]]);
+    sheet.getRange(2, 7, 1, 3).setValues([[99, -50, -49]]);
     app.recalculateAll();
-    assert.deepEqual(plain(sheet.getRange(2, 6, 1, 3).getValues()), [['', '', '']]);
+    assert.deepEqual(plain(sheet.getRange(2, 7, 1, 3).getValues()), [['', '', '']]);
   });
 
   it('places the summary in Send Reports for 15 participants without overwriting input', () => {
@@ -232,7 +232,7 @@ describe('Calculated values written to the spreadsheet', () => {
     assert.equal(reports.cell(1, 8), 'LIVE SUMMARY');
     assert.equal(reports.cell(2, 11), 0.01);
     assert.equal(sheet.cell(1, 22), '');
-    assert.deepEqual(plain(sheet.getRange(2, 1, 1, 5).getValues()), [expense]);
-    assert.deepEqual(plain(sheet.getRange(2, 6, 1, 15).getValues()), [new Array(15).fill(0)]);
+    assert.deepEqual(plain(sheet.getRange(2, 1, 1, 6).getValues()), [expense]);
+    assert.deepEqual(plain(sheet.getRange(2, 7, 1, 15).getValues()), [new Array(15).fill(0)]);
   });
 });

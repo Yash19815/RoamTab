@@ -23,7 +23,7 @@ it('grows the count when names are pasted below the current roster', () => {
   app.confirmSetupFromMenu();
   assert.equal(setup.cell(12, 2), 'Dev');
   assert.equal(setup.cell(12, 3), 'dev@example.test');
-  assert.equal(sheet.cell(1, 9), 'Dev');
+  assert.equal(sheet.cell(1, 10), 'Dev');
 });
 
 for (const trigger of ['menu', 'B6', 'B7']) {
@@ -42,7 +42,7 @@ for (const trigger of ['menu', 'B6', 'B7']) {
     }
     assert.equal(setup.cell(6, 2), true);
     assert.equal(setup.cell(7, 2), false);
-    assert.equal(sheet.cell(1, 8), 'Cara');
+    assert.equal(sheet.cell(1, 9), 'Cara');
     assert.deepEqual(plain(sheet.getRange(2, 1, 1, 5).getValues()), inputs);
     assert.equal(reports.cell(1, 1), 'PERSONAL BALANCES SUMMARY');
     assert.equal(reports.cell(1, 8), 'LIVE SUMMARY');
@@ -65,15 +65,15 @@ it('shrinks and regrows participant columns without losing dormant names or expe
   const { app, setup, sheet } = loadAppsScript({ roster: getMockRoster(15), expenses: [getMockExpense()] });
   setup.getRange('B2').setValue('Trip');
   app.confirmSetupFromMenu();
-  assert.equal(sheet.cell(1, 20), 'Person 15');
+  assert.equal(sheet.cell(1, 21), 'Person 15');
   setup.getRange('B3').setValue(2);
   app.onEdit({ range: setup.getRange('B3') });
-  assert.equal(sheet.cell(1, 20), '');
+  assert.equal(sheet.cell(1, 21), '');
   assert.equal(setup.cell(23, 2), 'Person 15');
   assert.equal(setup.cell(6, 2), false);
   setup.getRange('B3').setValue(15);
   app.confirmSetupFromMenu();
-  assert.equal(sheet.cell(1, 20), 'Person 15');
+  assert.equal(sheet.cell(1, 21), 'Person 15');
   assert.equal(sheet.cell(2, 3), 100);
 });
 

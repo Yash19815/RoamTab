@@ -18,10 +18,10 @@ function getMockRoster(count = 3) {
 
 function getMockExpense(overrides = {}) {
   const expense = {
-    date: '', description: 'Meal', amount: 100, payer: 'Alice', split: 'All',
+    date: '', description: 'Meal', amount: 100, payer: 'Alice', split: 'All', currency: '',
     ...overrides
   };
-  return [expense.date, expense.description, expense.amount, expense.payer, expense.split];
+  return [expense.date, expense.description, expense.amount, expense.payer, expense.split, expense.currency];
 }
 
 function getMockLedger(balances, overrides = {}) {
@@ -136,7 +136,7 @@ function loadAppsScript({
   roster.forEach((person, index) => {
     setup.getRange(index + 9, 1, 1, 3).setValues([[person.id, person.name, person.email]]);
   });
-  const sheet = getMockSheet([['Date', 'Description', 'Amount', 'Paid By', 'Split Among'], ...expenses], {
+  const sheet = getMockSheet([['Date', 'Description', 'Amount', 'Paid By', 'Split Among', 'Currency'], ...expenses], {
     lastRow: lastRow ?? expenses.length + 1
   });
   const reports = getMockSheet([], { maxColumns: 6 });
@@ -158,7 +158,8 @@ function loadAppsScript({
     },
     getActiveSheet: () => activeSheet,
     setActiveSheet(value) { activeSheet = value; },
-    getSpreadsheetTimeZone: () => 'Asia/Kolkata'
+    getSpreadsheetTimeZone: () => 'Asia/Kolkata',
+    getId: () => 'test-spreadsheet'
   };
   const alerts = [];
   const menuItems = [];
@@ -175,8 +176,46 @@ function loadAppsScript({
     }
   };
   let nextId = 0;
+  const properties = new Map();
+  const cacheEntries = new Map();
+  const cacheWrites = [];
+  const cache = {
+    get: key => cacheEntries.get(key) ?? null,
+    put(key, value, seconds) {
+      assert.ok(seconds > 0 && seconds <= 21600, 'Apps Script cache TTL limit');
+      cacheWrites.push({ key, seconds });
+      cacheEntries.set(key, value);
+    }
+  };
+  const propertyStore = {
+    getProperty: key => properties.get(key) ?? null,
+    getProperties: () => Object.fromEntries(properties),
+    setProperty(key, value) { properties.set(key, value); return propertyStore; },
+    deleteProperty(key) { properties.delete(key); return propertyStore; }
+  };
+  const triggers = [];
+  const fetches = [];
   const context = vm.createContext({
     Date,
+    CacheService: { getDocumentCache: () => cache },
+    PropertiesService: { getDocumentProperties: () => propertyStore },
+    UrlFetchApp: {
+      fetch(url) { fetches.push(url); throw new Error('Unexpected network request'); }
+    },
+    ScriptApp: {
+      AuthMode: { LIMITED: 'LIMITED', FULL: 'FULL' },
+      getProjectTriggers: () => triggers,
+      newTrigger(handler) {
+        const builder = {
+          forSpreadsheet: () => builder,
+          onEdit: () => builder,
+          create() {
+            triggers.push({ getHandlerFunction: () => handler, getTriggerSourceId: () => spreadsheet.getId() });
+          }
+        };
+        return builder;
+      }
+    },
     SpreadsheetApp: {
       getActiveSpreadsheet: () => spreadsheet,
       getUi: () => ui,
@@ -193,12 +232,15 @@ function loadAppsScript({
     Logger: { log() {} },
     LockService: { getDocumentLock: () => ({ waitLock() {}, releaseLock() {} }) },
     Utilities: {
-      formatDate: date => date.toISOString().slice(0, 10),
+      formatDate: (date, timeZone, format) => format === 'yyyy-MM-dd'
+        ? new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
+        : date.toISOString().slice(0, 10),
       getUuid: () => `test-trip-${++nextId}`
     }
   });
   vm.runInContext(source, context, { filename: 'Code.js', timeout: 1000 });
-  return { app: context, sheet, setup, reports, spreadsheet, alerts, ui, menuItems };
+  return { app: context, sheet, setup, reports, spreadsheet, alerts, ui, menuItems,
+    properties, cacheEntries, cacheWrites, triggers, fetches };
 }
 
 // Convert VM arrays/objects into the test realm for strict structural assertions.

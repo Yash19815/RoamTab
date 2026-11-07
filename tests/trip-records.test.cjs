@@ -261,12 +261,12 @@ it('restores formula-like text as literal data in inputs, headers, and reports',
   trip.setup.roster[0][1] = '=1+2';
   trip.setup.roster[0][2] = '=1+3';
   trip.setup.confirmed = true;
-  trip.expenses = [['', '=1+4', 10, '=1+2', 'All'], ['', "'literal", '', '', '']];
+  trip.expenses = [['', '=1+4', 10, '=1+2', 'All', ''], ['', "'literal", '', '', '', '']];
   app.importTripJson(JSON.stringify(trip));
   assert.equal(setup.cell(2, 2), '=1+1');
   assert.equal(sheet.cell(2, 2), '=1+4');
   assert.equal(sheet.cell(3, 2), "'literal");
-  assert.equal(sheet.cell(1, 6), '=1+2');
+  assert.equal(sheet.cell(1, 7), '=1+2');
   assert.equal(reports.cell(4, 8), '=1+2');
   assert.equal(reports.cell(3, 1), '=1+2');
   assert.equal(app.literalSheetCell_('=1+2'), "'=1+2");

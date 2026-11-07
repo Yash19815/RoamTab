@@ -1,0 +1,42 @@
+#!/bin/sh
+# Install this file as the source repository's .git/hooks/pre-push (LF, no BOM).
+
+SOURCE_REPO='D:/DATA/Documents(old)/projects/Main_Projects/travel-expense-excel'
+TARGET_REPO='D:/DATA/Documents(old)/projects/Main_Projects/roamtab-template'
+SOURCE_FILE="$SOURCE_REPO/Code.js"
+TARGET_FILE="$TARGET_REPO/Code.js"
+
+fail() {
+  printf 'pre-push: %s\n' "$1" >&2
+  exit 1
+}
+
+[ -f "$SOURCE_FILE" ] || fail "Source file missing: $SOURCE_FILE"
+[ -d "$TARGET_REPO" ] || fail "Target directory missing: $TARGET_REPO"
+[ -f "$TARGET_REPO/.clasp.json" ] || fail "Target .clasp.json missing: $TARGET_REPO/.clasp.json"
+[ ! -d "$TARGET_FILE" ] || fail "Target Code.js is a directory: $TARGET_FILE"
+command -v clasp >/dev/null 2>&1 || fail 'clasp is not on PATH. Install @google/clasp and restart the terminal.'
+
+printf 'pre-push: Copying Code.js to %s\n' "$TARGET_REPO"
+cp -f -- "$SOURCE_FILE" "$TARGET_FILE" || fail 'Copy failed; Git push aborted.'
+cmp -s -- "$SOURCE_FILE" "$TARGET_FILE" || fail 'Copied file differs from source; Git push aborted.'
+cd "$TARGET_REPO" || fail 'Cannot enter target directory; Git push aborted.'
+
+printf 'pre-push: Running clasp push in %s\n' "$TARGET_REPO"
+# Git provides ref-update records on stdin. Do not pass them to clasp prompts.
+if clasp_output=$(clasp push </dev/null 2>&1); then
+  printf '%s\n' "$clasp_output"
+else
+  printf '%s\n' "$clasp_output" >&2
+  fail 'clasp push failed; Git push aborted. The target copy remains in place.'
+fi
+
+# Current clasp can decline a manifest update with status zero in noninteractive mode.
+case "$clasp_output" in
+  *'Skipping push.'*)
+    fail 'clasp skipped the upload. Run clasp push interactively in the target, resolve the manifest prompt, then retry.'
+    ;;
+esac
+
+printf 'pre-push: Copy verified and clasp push completed; continuing Git push.\n'
+exit 0
