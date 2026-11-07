@@ -345,7 +345,7 @@ Generate pay, receive, settled, and long-statement HTML previews without sending
 node tests/preview-pdf.cjs
 ```
 
-Open the files in `tests/previews/` and print to PDF using A4 paper with browser headers and footers disabled. These files are excluded from clasp uploads. The repository includes sample preview artifacts; running the command regenerates HTML, not the committed PDF or PNG files.
+Open the files in `tests/previews/` and print to PDF using A4 paper with browser headers and footers disabled. This generated directory is ignored by Git and excluded from clasp uploads. The command generates HTML; PDF and PNG exports require browser printing or rendering. Curated screenshots remain in `assets/`.
 
 ---
 
