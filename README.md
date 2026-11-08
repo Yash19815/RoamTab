@@ -310,6 +310,8 @@ Run `setup()` only when initializing a blank development spreadsheet. For subseq
 
 For push automation, use [`scripts/pre-push`](scripts/pre-push) and the [Git Bash/PowerShell setup and verification guide](docs/pre-push-setup.md). Set the environment variable **`ROAMTAB_TEMPLATE_REPO`** to the absolute path of your template checkout, or save it with **`git config --local roamtab.templateRepo "/absolute/path/to/roamtab-template"`**. The environment variable takes precedence; the local Git setting also works in apps that have not inherited updated environment variables. The hook detects this source checkout through Git; no developer-specific paths are embedded in it. It overwrites the template's `Code.js` from this working tree, uploads the template with `clasp push`, then uploads the main Apps Script project from this repository. Each upload uses that repository's `.clasp.json` and ignore rules. Missing/invalid path configuration, copy errors, upload failures, or skipped uploads block the Git push. Install it separately in each clone and reinstall after hook changes; the guide covers environment setup, PATH, authentication, and upload behavior. `.claspignore` excludes local automation scripts from source-project uploads.
 
+Automatic hook uploads run `clasp push --force` for both projects. Each checkout's local `appsscript.json` replaces its remote manifest without a confirmation prompt, including runtime, timezone, and explicitly configured permissions. Upload failures and unexpected skipped uploads still block the Git push.
+
 ---
 
 ## 📂 Project Architecture

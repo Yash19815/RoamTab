@@ -36,11 +36,15 @@ function fixture(t, options = {}) {
     '#!/bin/sh',
     '{',
     '  if command -v cygpath >/dev/null 2>&1; then cygpath -m "$PWD"; else printf "%s\\n" "$PWD"; fi',
-    '  printf "%s\\n" "$@"',
+    '  printf "%s\\n" "$*"',
     '} >> "$HOOK_TEST_LOG"',
     'if IFS= read -r record; then',
     '  printf "clasp received Git stdin unexpectedly\\n" >&2',
     '  exit 97',
+    'fi',
+    'if [ "${HOOK_TEST_MANIFEST_CHANGED:-0}" = 1 ] && [ "$*" != "push --force" ]; then',
+    '  printf "Skipping push.\\n"',
+    '  exit 0',
     'fi',
     'case "$PWD" in',
     '  *"/source repo (draft)")',
@@ -85,9 +89,9 @@ it('overwrites Code.js byte-for-byte, uploads template then main, and isolates s
   assert.deepEqual(readFileSync(path.join(state.source, 'Code.js')), readFileSync(path.join(state.target, 'Code.js')));
   const [cwd, command, mainCwd, mainCommand, ...extra] = readFileSync(state.log, 'utf8').trim().split('\n');
   assert.equal(cwd.toLowerCase(), shellPath(state.target).toLowerCase());
-  assert.equal(command, 'push');
+  assert.equal(command, 'push --force');
   assert.equal(mainCwd.toLowerCase(), shellPath(state.source).toLowerCase());
-  assert.equal(mainCommand, 'push');
+  assert.equal(mainCommand, 'push --force');
   assert.deepEqual(extra, []);
   assert.match(result.stdout, /Copy verified and clasp push completed/);
 });
@@ -248,4 +252,20 @@ it('does not hide an invalid environment override by using the local Git fallbac
   assert.equal(result.status, 1);
   assert.match(result.stderr, /must be an absolute path/);
   assert.equal(existsSync(state.log), false);
+});
+
+it('uploads changed manifests without interactive confirmation for both projects', t => {
+  const state = fixture(t);
+  const sourceManifest = '{"timeZone":"Etc/UTC","runtimeVersion":"V8"}\n';
+  const templateManifest = '{"timeZone":"Asia/Kolkata","runtimeVersion":"V8"}\n';
+  writeFileSync(path.join(state.source, 'appsscript.json'), sourceManifest);
+  writeFileSync(path.join(state.target, 'appsscript.json'), templateManifest);
+  const result = state.run({ HOOK_TEST_MANIFEST_CHANGED: '1' });
+  assert.equal(result.status, 0, result.stderr);
+  const [, templateCommand, , mainCommand] = readFileSync(state.log, 'utf8').trim().split('\n');
+  assert.equal(templateCommand, 'push --force');
+  assert.equal(mainCommand, 'push --force');
+  assert.doesNotMatch(result.stdout, /Skipping push/);
+  assert.equal(readFileSync(path.join(state.source, 'appsscript.json'), 'utf8'), sourceManifest);
+  assert.equal(readFileSync(path.join(state.target, 'appsscript.json'), 'utf8'), templateManifest);
 });

@@ -37,9 +37,10 @@ push_project() (
   project_label="$2"
   cd "$project_repo" || fail "Cannot enter $project_label directory; Git push aborted."
 
-  printf 'pre-push: Running clasp push for %s in %s\n' "$project_label" "$project_repo"
+  printf 'pre-push: Running clasp push --force for %s in %s\n' "$project_label" "$project_repo"
 # Git provides ref-update records on stdin. Do not pass them to clasp prompts.
-  if clasp_output=$(clasp push </dev/null 2>&1); then
+  # Each checkout's local manifest is authoritative for its automatic upload.
+  if clasp_output=$(clasp push --force </dev/null 2>&1); then
     printf '%s\n' "$clasp_output"
   else
     printf '%s\n' "$clasp_output" >&2
@@ -49,7 +50,7 @@ push_project() (
 # Current clasp can decline a manifest update with status zero in noninteractive mode.
   case "$clasp_output" in
     *'Skipping push.'*)
-      fail "clasp skipped the upload for $project_label. Run clasp push interactively in $project_repo, resolve the manifest prompt, then retry."
+      fail "clasp skipped the upload for $project_label despite --force. Check the clasp version and project configuration in $project_repo."
       ;;
   esac
 )
