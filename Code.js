@@ -62,6 +62,7 @@ const SETUP_CONFIRM_CELL = 'B6';
 const SETUP_UPDATE_CELL = 'B7';
 const SETUP_SAVE_CELL = 'E6';
 const SETUP_TRIP_ID_CELL = 'E3';
+const SETUP_TIMEZONE_CELL = 'E4';
 
 const ROSTER_HEADER_ROW = 8;
 const ROSTER_START_ROW = 9;
@@ -253,6 +254,25 @@ function ensureTripControls_() {
   const sheet = ss.getSheetByName(SHEET_SETUP);
   if (sheet) {
     sheet.getRange('D3').setValue('Current Trip ID');
+    sheet.getRange('D4').setValue('Timezone').setFontWeight('bold');
+    const timeZoneCell = sheet.getRange(SETUP_TIMEZONE_CELL);
+    timeZoneCell.setValue(ss.getSpreadsheetTimeZone()).setDataValidation(
+      SpreadsheetApp.newDataValidation().requireValueInList([
+        'Etc/UTC', 'Pacific/Honolulu', 'America/Anchorage', 'America/Los_Angeles',
+        'America/Denver', 'America/Chicago', 'America/New_York', 'America/Toronto',
+        'America/Mexico_City', 'America/Bogota', 'America/Sao_Paulo',
+        'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Moscow',
+        'Africa/Cairo', 'Africa/Johannesburg', 'Africa/Lagos', 'Asia/Dubai',
+        'Asia/Karachi', 'Asia/Kolkata', 'Asia/Kathmandu', 'Asia/Dhaka',
+        'Asia/Bangkok', 'Asia/Singapore', 'Asia/Shanghai', 'Asia/Tokyo',
+        'Asia/Seoul', 'Australia/Perth', 'Australia/Adelaide', 'Australia/Sydney',
+        'Pacific/Auckland', 'Pacific/Fiji'
+      ], true).setAllowInvalid(true).build()
+    ).setNote(
+      'Choose a timezone or type any Google Sheets timezone, such as America/New_York. ' +
+      'Applies to everyone using this spreadsheet, expense dates, FX dates, and report timestamps. ' +
+      'Existing expense calendar dates are preserved. Saved trips retain their own timezone.'
+    );
     sheet.getRange('D6').setValue('Save Trip').setFontWeight('bold');
     sheet.getRange(SETUP_SAVE_CELL).insertCheckboxes().setValue(false).setNote(
       'Tick to save all trip inputs as JSON in Records. Resets after saving. ' +
@@ -260,6 +280,37 @@ function ensureTripControls_() {
     );
   }
   ensureRecordsSheet_();
+}
+
+function applySelectedTimezone_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_SETUP);
+  const cell = sheet.getRange(SETUP_TIMEZONE_CELL);
+  const previous = ss.getSpreadsheetTimeZone();
+  const selected = String(cell.getValue() || '').trim();
+  if (selected === previous) return true;
+  const expenses = ss.getSheetByName(SHEET_EXPENSES);
+  const height = expenses ? Math.min(MAX_DATA_ROWS, expenses.getLastRow() - 1) : 0;
+  const dates = height > 0 ? expenses.getRange(2, COL.DATE, height, 1).getValues() : [];
+  try {
+    if (!selected) throw new Error('Choose a timezone, for example America/New_York.');
+    // Spreadsheet service validates the zone before any expense inputs change.
+    ss.setSpreadsheetTimeZone(selected);
+    const converted = dates.map(([value]) => [value instanceof Date
+      ? Utilities.parseDate(Utilities.formatDate(value, previous, 'yyyy-MM-dd'), selected, 'yyyy-MM-dd')
+      : value]);
+    if (height > 0) expenses.getRange(2, COL.DATE, height, 1).setValues(converted);
+    cell.setValue(ss.getSpreadsheetTimeZone());
+    sheet.getRange(SETUP_CONFIRM_CELL).setValue(false);
+    recalculateAll(true);
+    return true;
+  } catch (err) {
+    ss.setSpreadsheetTimeZone(previous);
+    if (height > 0) expenses.getRange(2, COL.DATE, height, 1).setValues(dates);
+    cell.setValue(previous);
+    safeAlert(`Timezone update failed: ${err.message}`);
+    return false;
+  }
 }
 
 function ensureRecordsSheet_() {
@@ -681,7 +732,7 @@ function getCurrencySymbol_() {
 }
 
 function getCurrencyFormat_() {
-  return `"${getCurrencySymbol_()}"#,##0.00`;
+  return `"${getCurrencySymbol_()}"#,##0`;
 }
 
 function currencyCode_(value) {
@@ -1099,6 +1150,10 @@ function handleEdit_(e) {
   const a1 = range.getA1Notation();
 
   if (sheetName === SHEET_SETUP) {
+    if (col <= 5 && col + range.getNumColumns() - 1 >= 5 &&
+        row <= 4 && row + range.getNumRows() - 1 >= 4) {
+      if (!applySelectedTimezone_()) return;
+    }
     if (a1 === SETUP_SAVE_CELL) {
       if (range.getValue() === true) {
         try {
@@ -1938,7 +1993,7 @@ function writeLiveSummary_(sheet, col, ledger, format) {
     .merge()
     .setValue(
       'Spent = a person’s technical share, even if another person paid the bill.'
-    )
+    ).setNote('Net includes whole-unit payment rounding. Paid and spent retain exact stored values but display without decimals.')
     .setFontStyle('italic')
     .setFontColor('#64748B')
     .setFontSize(9);
@@ -2082,9 +2137,35 @@ function calculateOptimalSettlements_(ledger) {
   return settlements;
 }
 
+function wholeUnits_(minor) {
+  const absolute = Math.abs(minor);
+  const rounded = Math.floor(absolute / 100) + (absolute % 100 >= 50 ? 1 : 0);
+  return minor < 0 && rounded !== 0 ? -rounded : rounded;
+}
+
+function buildWholeUnitLedger_(ledger) {
+  if (ledger.wholeUnitPayments || ledger.errors.length) return ledger;
+  const balances = new Map(ledger.roster.map(person => [person.id, 0]));
+  try {
+    // Round each payment once for both parties, so no money is created or lost.
+    calculateOptimalSettlements_(ledger).forEach(payment => {
+      const amount = wholeUnits_(payment.amountMinor) * 100;
+      balances.set(payment.fromId, balances.get(payment.fromId) - amount);
+      balances.set(payment.toId, balances.get(payment.toId) + amount);
+    });
+    const credits = [...balances.values()].reduce((sum, value) => sum + Math.max(value, 0), 0);
+    if (!Number.isSafeInteger(credits) || [...balances.values()].some(value => !Number.isSafeInteger(value))) {
+      throw new Error('Rounded settlement totals exceed the safe integer range.');
+    }
+    return { ...ledger, balances, wholeUnitPayments: true };
+  } catch (err) {
+    return { ...ledger, errors: [...ledger.errors, err.message] };
+  }
+}
+
 function buildSettlementExplanations_(ledger, settlements, currency) {
   const remaining = new Map(ledger.balances);
-  const money = minor => `${minor < 0 ? '-' : ''}${currency}${fromMinor_(Math.abs(minor)).toFixed(2)}`;
+  const money = minor => `${minor < 0 ? '-' : ''}${currency}${wholeUnits_(Math.abs(minor))}`;
 
   return settlements.map(settlement => {
     const fromId = settlement.fromId;
@@ -2284,7 +2365,7 @@ function updateSendReportsSheet(existingLedger) {
   const sheet = ss.getSheetByName(SHEET_REPORTS) ||
     ss.insertSheet(SHEET_REPORTS);
 
-  const ledger = existingLedger || buildLedger_();
+  const ledger = buildWholeUnitLedger_(existingLedger || buildLedger_());
   const roster = ledger.roster;
   const format = getCurrencyFormat_();
 
@@ -2460,7 +2541,7 @@ function updateSendReportsSheet(existingLedger) {
         settlement.from,
         settlement.to,
         amount,
-        `${settlement.from} pays ${settlement.to} ${symbol}${amount.toFixed(2)}`,
+        `${settlement.from} pays ${settlement.to} ${symbol}${amount.toFixed(0)}`,
         explanations[index]
       ];
     });
@@ -2511,7 +2592,11 @@ function escapeHtml_(value) {
  * Table layouts avoid reliance on flex/grid support in the PDF converter.
  */
 function buildParticipantReportHtml_({ ledger, settlements, person, tripName, currency, generatedOn }) {
-  const money = minor => escapeHtml_(currency) + fromMinor_(minor).toFixed(2)
+  if (!ledger.wholeUnitPayments) {
+    ledger = buildWholeUnitLedger_(ledger);
+    settlements = calculateOptimalSettlements_(ledger);
+  }
+  const money = minor => escapeHtml_(currency) + String(wholeUnits_(minor))
     .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   const paid = ledger.paid.get(person.id) || 0;
   const spent = ledger.spent.get(person.id) || 0;
@@ -2641,8 +2726,9 @@ function buildParticipantReportHtml_({ ledger, settlements, person, tripName, cu
   <table class="personal-total" role="presentation"><tr><td>Your total share</td><td class="amount">${money(spent)}</td></tr></table>
   <footer class="report-footer">
     <p><strong>How to read this statement</strong></p>
-    <p>Your net balance = what you paid minus your share. A positive balance means you receive money; a negative balance means you pay.</p>
+    <p>Your net balance = what you paid minus your share, adjusted for whole-unit payments. A positive balance means you receive money; a negative balance means you pay.</p>
     <p>Payments above settle your share across the group. This statement shows a plan, not a payment receipt.</p>
+    <p>Payments use whole currency units; .50 rounds up. Net balances include payment rounding. Expense details are displayed rounded; original entries retain their precision.</p>
   </footer>
 </body>
 </html>`;
@@ -2689,7 +2775,7 @@ function sendPdfReports() {
   const setupSheet = ss.getSheetByName(SHEET_SETUP);
   const reportsSheet = ss.getSheetByName(SHEET_REPORTS);
 
-  const ledger = buildLedger_();
+  const ledger = buildWholeUnitLedger_(buildLedger_());
 
   if (ledger.errors.length) {
     safeAlert(`Cannot send reports: ${ledger.errors.join(' | ')}`);
@@ -2806,7 +2892,7 @@ function diagnose() {
   const setupSheet = ss.getSheetByName(SHEET_SETUP);
   const expensesSheet = ss.getSheetByName(SHEET_EXPENSES);
 
-  const ledger = buildLedger_();
+  const ledger = buildWholeUnitLedger_(buildLedger_());
   const roster = ledger.roster;
 
   const participantCount = roster.length;
@@ -2823,7 +2909,8 @@ function diagnose() {
     'Live Summary: Send Reports!H:K',
     `Expenses sheet exists: ${!!expensesSheet}`,
     `Valid expenses: ${ledger.expenses.length}`,
-    `Total spent: ${fromMinor_(ledger.totalMinor).toFixed(2)}`,
+    `Timezone: ${ss.getSpreadsheetTimeZone()}`,
+    `Total spent: ${wholeUnits_(ledger.totalMinor)}`,
     `Ledger errors: ${ledger.errors.length ? ledger.errors.join(' | ') : 'none'}`
   ];
 
@@ -2840,7 +2927,7 @@ function diagnose() {
     netSum += net;
 
     lines.push(
-      `${person.name}: ${fromMinor_(net).toFixed(2)}`
+      `${person.name}: ${wholeUnits_(net)}`
     );
   });
 
@@ -2853,7 +2940,7 @@ function diagnose() {
 
     settlements.forEach(item => {
       lines.push(
-        `${item.from} -> ${item.to}: ${fromMinor_(item.amountMinor).toFixed(2)}`
+        `${item.from} -> ${item.to}: ${wholeUnits_(item.amountMinor)}`
       );
     });
 

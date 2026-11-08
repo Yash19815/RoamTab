@@ -11,12 +11,13 @@ node --test tests/pdf-report.test.cjs
 node --test tests/trip-records.test.cjs
 node --test tests/trip-json-dialog.test.cjs
 node --test tests/splits-fx.test.cjs
+node --test tests/timezone-rounding.test.cjs
 node --test tests/pre-push.test.cjs
 ```
 
 No dependencies, Google credentials, live spreadsheets, or email access are required.
 
-Hook tests additionally require Git for Windows Bash at `C:\Program Files\Git\bin\bash.exe` on Windows, or `/bin/bash` elsewhere. They run the production hook with only its two deployment paths substituted, temporary directories with spaces and parentheses, and mocked commands. They check copy/verification failures, clasp exits and skipped uploads, working directory, and stdin isolation. They do not upload to Google or modify the real target repository. See [hook installation and live verification](../docs/pre-push-setup.md).
+Hook tests additionally require Git and Git for Windows Bash at `C:\Program Files\Git\bin\bash.exe` on Windows, or `/bin/bash` elsewhere. They run the unchanged production hook in real temporary Git checkouts with environment-configured template paths, spaces and parentheses in directory names, and mocked upload commands. They check automatic source detection, required/absolute/distinct template paths, native Windows paths, copy/verification failures, both project configurations, template-before-main upload order, clasp failures and skipped uploads for either project, both working directories, and stdin isolation for each upload. They do not upload to Google or modify the real target repository. See [hook installation and live verification](../docs/pre-push-setup.md).
 
 ## Scope
 
@@ -31,7 +32,9 @@ Hook tests additionally require Git for Windows Bash at `C:\Program Files\Git\bi
 - Exercise 100 seeded trips, 1,000 seeded balance groups, and 100 small groups compared with an independent exact oracle.
 - Check the production exact solver against the independent exhaustive oracle for 625 balanced five-person cases and 200 seeded groups of up to 10 people.
 - Verify known minimum counts with 15 people and report timing for 20 maximum-size local cases without flaky runtime assertions.
-- Verify the simple explanation template with outstanding debt, outstanding credit, and the smaller payment amount; check exact cents, configured currency, report cleanup after roster changes or unconfirmation, and identical sheet/PDF payment instructions.
+- Verify the simple explanation template with outstanding debt, outstanding credit, and the smaller payment amount; check whole-unit output, configured currency, report cleanup after roster changes or unconfirmation, and identical sheet/PDF payment instructions.
+- Check timezone controls inherit the spreadsheet setting, accept custom supported zones, reject invalid/blank zones, and preserve winter/summer calendar dates. Confirm snapshots and FX date selection use the selected timezone.
+- Check nearest-unit payments including .49, .50, both requested ₹455 examples, zero-payment removal, unchanged raw expense values, and reconciled sheet/PDF net balances. Seeded 2–15-person groups clear their rounded balances exactly.
 - Check PDF statement pay/receive/settled states, payment-first reading order, personal expense filtering, escaped user content, and complete 500-row output.
 - Exercise real menu/B6/B7 setup confirmation, pasted roster growth, count shrink/regrowth without name or email loss, dynamic expense headers, legacy summary cleanup, and an always-live Send Reports!H:K summary.
 - Exercise trip saves from the menu and E6, repeated archive updates, JSON parts beyond one cell, 15-person/500-expense round trips, real dates, incomplete rows, inactive roster entries, confirmation restoration, save-before-load/reset behavior, import validation, formula-like text, and selected-record deletion with confirmation.
@@ -46,7 +49,7 @@ Inspect single-page spacing, currency glyphs, long descriptions, repeated table 
 
 ## Findings
 
-The tested positive amounts with up to two decimal places preserve money and produce settlement plans that clear every balance. This is regression evidence, not a proof for every possible input.
+The tested positive amounts with up to two decimal places preserve money in the accounting ledger. Production payments round the exact plan to whole units for both parties, then solve the resulting balanced payment ledger. Those plans clear the rounded balances; sub-unit differences from the original expense ledger are intentional rounding adjustments. This is regression evidence, not a proof for every possible input.
 
 Ungrouped greedy matching **does not guarantee the minimum number of transfers**. The production solver now finds the exact minimum using subset DP. The regression case uses these net balances:
 
@@ -67,6 +70,8 @@ Remainders go to participants with positive split weights in ascending ID order,
 The test oracle exhaustively partitions balances into zero-sum groups and is limited to 10 nonzero balances. Production instead uses an `O(n × 2^n)` prefix DP for up to 15 people, reconstructs the optimal groups, and uses the greedy helper only within those groups. It rejects invalid balances and aggregate magnitudes outside JavaScript's safe integer range. No automated coverage percentage is enforced.
 
 These tests do not validate Google Sheets trigger delivery, real formatting, authorization, PDF conversion, or actual email delivery. PDF instruction HTML and email requests are inspected through mocked service boundaries. Local benchmark timings do not establish Apps Script execution time. The suite does not establish support for negative expenses, arbitrary-precision amounts, or amounts beyond JavaScript's safe integer range.
+
+Timezone tests simulate the spreadsheet timezone setter and date parser with Node's timezone database. In a disposable Google Sheet, select a suggested timezone and a custom supported timezone in E4, verify existing dates remain unchanged, and confirm reports and FX dates follow the selection. Verify invalid entries restore the previous setting. Check ₹455.76, ₹455.23, and ₹455.50 payments in Send Reports and a controlled PDF preview.
 
 FX tests mock CacheService, document properties, ScriptApp triggers, and Frankfurter v2 responses. No live rate request is sent. In a disposable sheet, check the Currency F input and participant outputs from G, enable automatic conversion, edit dated foreign expenses from desktop/mobile, and confirm authorization and trigger delivery. Verify a weekend's prior observation, an unsupported pair error, and zero-sum balances. The ledger uses two decimal places for all currencies. A cold lookup requires network time; local timings do not establish Apps Script performance for 500 distinct uncached pairs/dates.
 

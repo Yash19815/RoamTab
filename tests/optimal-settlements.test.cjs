@@ -192,20 +192,20 @@ describe('Settlement explanations in the report sheet', () => {
     const settlements = app.calculateOptimalSettlements_(ledger);
     const explanations = app.buildSettlementExplanations_(ledger, settlements, '₹');
     assert.deepEqual(plain(explanations), [
-      'Cara owes ₹40.00. Alice needs ₹65.00.\nPay ₹40.00 so at least one person reaches ₹0.00 balance.',
-      'Bob owes ₹25.00. Alice needs ₹25.00.\nPay ₹25.00 so at least one person reaches ₹0.00 balance.'
+      'Cara owes ₹40. Alice needs ₹65.\nPay ₹40 so at least one person reaches ₹0 balance.',
+      'Bob owes ₹25. Alice needs ₹25.\nPay ₹25 so at least one person reaches ₹0 balance.'
     ]);
     assert.equal(ledger.balances.get(1), 6500, 'Explanation building must not mutate the ledger');
   });
 
-  it('uses the configured currency and exact cents in explanation text', () => {
-    const { app } = loadAppsScript({ roster: getMockRoster(2), expenses: [getMockExpense({ amount: 0.03 })] });
-    const ledger = app.buildLedger_();
+  it('uses the configured currency and rounded whole units in explanation text', () => {
+    const { app } = loadAppsScript({ roster: getMockRoster(2), expenses: [getMockExpense({ amount: 911.52 })] });
+    const ledger = app.buildWholeUnitLedger_(app.buildLedger_());
     const settlements = app.calculateOptimalSettlements_(ledger);
     const [explanation] = app.buildSettlementExplanations_(ledger, settlements, '$');
-    assert.match(explanation, /Bob owes \$0\.01/);
-    assert.match(explanation, /Alice needs \$0\.01/);
-    assert.doesNotMatch(explanation, /₹|0\.009|0\.0100/);
+    assert.match(explanation, /Bob owes \$456/);
+    assert.match(explanation, /Alice needs \$456/);
+    assert.doesNotMatch(explanation, /₹|\$\d+\.\d/);
   });
 
   it('renders an explanation cell next to each minimum settlement', () => {
@@ -216,11 +216,11 @@ describe('Settlement explanations in the report sheet', () => {
     assert.equal(reports.cell(titleRow + 1, 5), 'Explanation');
     const rows = plain(reports.getRange(titleRow + 2, 1, 2, 5).getValues());
     assert.deepEqual(rows.map(row => row.slice(0, 4)), [
-      ['Cara', 'Alice', 40, 'Cara pays Alice ₹40.00'],
-      ['Bob', 'Alice', 25, 'Bob pays Alice ₹25.00']
+      ['Cara', 'Alice', 40, 'Cara pays Alice ₹40'],
+      ['Bob', 'Alice', 25, 'Bob pays Alice ₹25']
     ]);
-    assert.equal(rows[0][4], 'Cara owes ₹40.00. Alice needs ₹65.00.\nPay ₹40.00 so at least one person reaches ₹0.00 balance.');
-    assert.equal(rows[1][4], 'Bob owes ₹25.00. Alice needs ₹25.00.\nPay ₹25.00 so at least one person reaches ₹0.00 balance.');
+    assert.equal(rows[0][4], 'Cara owes ₹40. Alice needs ₹65.\nPay ₹40 so at least one person reaches ₹0 balance.');
+    assert.equal(rows[1][4], 'Bob owes ₹25. Alice needs ₹25.\nPay ₹25 so at least one person reaches ₹0 balance.');
   });
 
   it('renders three report rows for the old four-transfer greedy case', () => {
@@ -326,8 +326,8 @@ describe('Settlement explanations in the report sheet', () => {
       const html = email.options.attachments[0].html;
       const [, actions] = /<ul class="settlement-list">(.*?)<\/ul>/s.exec(html);
       const expected = payments.flatMap(([from, to, amount]) => {
-        if (from === person.name) return [`<li>You pay <b>${to}</b> ₹${amount.toFixed(2)}</li>`];
-        if (to === person.name) return [`<li><b>${from}</b> pays you ₹${amount.toFixed(2)}</li>`];
+        if (from === person.name) return [`<li>You pay <b>${to}</b> ₹${amount.toFixed(0)}</li>`];
+        if (to === person.name) return [`<li><b>${from}</b> pays you ₹${amount.toFixed(0)}</li>`];
         return [];
       }).join('');
       assert.equal(actions, expected);

@@ -1,18 +1,27 @@
 #!/bin/sh
 # Install this file as the source repository's .git/hooks/pre-push (LF, no BOM).
 
-SOURCE_REPO='D:/DATA/Documents(old)/projects/Main_Projects/travel-expense-excel'
-TARGET_REPO='D:/DATA/Documents(old)/projects/Main_Projects/roamtab-template'
-SOURCE_FILE="$SOURCE_REPO/Code.js"
-TARGET_FILE="$TARGET_REPO/Code.js"
-
 fail() {
   printf 'pre-push: %s\n' "$1" >&2
   exit 1
 }
 
-[ -f "$SOURCE_FILE" ] || fail "Source file missing: $SOURCE_FILE"
+SOURCE_REPO=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'Cannot detect source repository; run from inside the source checkout.'
+TARGET_REPO=${ROAMTAB_TEMPLATE_REPO:-}
+[ -n "$TARGET_REPO" ] || fail 'Set ROAMTAB_TEMPLATE_REPO to the absolute path of your template checkout before pushing.'
+case "$TARGET_REPO" in
+  /*|[A-Za-z]:/*|[A-Za-z]:\\*) ;;
+  *) fail 'ROAMTAB_TEMPLATE_REPO must be an absolute path.' ;;
+esac
 [ -d "$TARGET_REPO" ] || fail "Target directory missing: $TARGET_REPO"
+SOURCE_REPO=$(cd "$SOURCE_REPO" && pwd -P) || fail 'Cannot resolve source directory.'
+TARGET_REPO=$(cd "$TARGET_REPO" && pwd -P) || fail 'Cannot resolve target directory.'
+[ "$SOURCE_REPO" != "$TARGET_REPO" ] || fail 'ROAMTAB_TEMPLATE_REPO must point to a different checkout from the source repository.'
+SOURCE_FILE="$SOURCE_REPO/Code.js"
+TARGET_FILE="$TARGET_REPO/Code.js"
+
+[ -f "$SOURCE_FILE" ] || fail "Source file missing: $SOURCE_FILE"
+[ -f "$SOURCE_REPO/.clasp.json" ] || fail "Source .clasp.json missing: $SOURCE_REPO/.clasp.json"
 [ -f "$TARGET_REPO/.clasp.json" ] || fail "Target .clasp.json missing: $TARGET_REPO/.clasp.json"
 [ ! -d "$TARGET_FILE" ] || fail "Target Code.js is a directory: $TARGET_FILE"
 command -v clasp >/dev/null 2>&1 || fail 'clasp is not on PATH. Install @google/clasp and restart the terminal.'
@@ -20,23 +29,30 @@ command -v clasp >/dev/null 2>&1 || fail 'clasp is not on PATH. Install @google/
 printf 'pre-push: Copying Code.js to %s\n' "$TARGET_REPO"
 cp -f -- "$SOURCE_FILE" "$TARGET_FILE" || fail 'Copy failed; Git push aborted.'
 cmp -s -- "$SOURCE_FILE" "$TARGET_FILE" || fail 'Copied file differs from source; Git push aborted.'
-cd "$TARGET_REPO" || fail 'Cannot enter target directory; Git push aborted.'
+push_project() (
+  project_repo="$1"
+  project_label="$2"
+  cd "$project_repo" || fail "Cannot enter $project_label directory; Git push aborted."
 
-printf 'pre-push: Running clasp push in %s\n' "$TARGET_REPO"
+  printf 'pre-push: Running clasp push for %s in %s\n' "$project_label" "$project_repo"
 # Git provides ref-update records on stdin. Do not pass them to clasp prompts.
-if clasp_output=$(clasp push </dev/null 2>&1); then
-  printf '%s\n' "$clasp_output"
-else
-  printf '%s\n' "$clasp_output" >&2
-  fail 'clasp push failed; Git push aborted. The target copy remains in place.'
-fi
+  if clasp_output=$(clasp push </dev/null 2>&1); then
+    printf '%s\n' "$clasp_output"
+  else
+    printf '%s\n' "$clasp_output" >&2
+    fail "clasp push failed for $project_label; Git push aborted. The target copy remains in place."
+  fi
 
 # Current clasp can decline a manifest update with status zero in noninteractive mode.
-case "$clasp_output" in
-  *'Skipping push.'*)
-    fail 'clasp skipped the upload. Run clasp push interactively in the target, resolve the manifest prompt, then retry.'
-    ;;
-esac
+  case "$clasp_output" in
+    *'Skipping push.'*)
+      fail "clasp skipped the upload for $project_label. Run clasp push interactively in $project_repo, resolve the manifest prompt, then retry."
+      ;;
+  esac
+)
 
-printf 'pre-push: Copy verified and clasp push completed; continuing Git push.\n'
+push_project "$TARGET_REPO" 'template project' || exit 1
+push_project "$SOURCE_REPO" 'main project' || exit 1
+
+printf 'pre-push: Copy verified and clasp push completed for template and main projects; continuing Git push.\n'
 exit 0

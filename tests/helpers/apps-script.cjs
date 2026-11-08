@@ -144,6 +144,7 @@ function loadAppsScript({
   sheet.getName = () => 'Expenses';
   const sheets = new Map([['Setup', setup], ['Expenses', sheet], ['Send Reports', reports]]);
   let activeSheet = sheet;
+  let spreadsheetTimeZone = 'Asia/Kolkata';
   const spreadsheet = {
     getSheetByName(name) {
       if (name === 'Setup') return missingSetup ? null : setup;
@@ -158,7 +159,11 @@ function loadAppsScript({
     },
     getActiveSheet: () => activeSheet,
     setActiveSheet(value) { activeSheet = value; },
-    getSpreadsheetTimeZone: () => 'Asia/Kolkata',
+    getSpreadsheetTimeZone: () => spreadsheetTimeZone,
+    setSpreadsheetTimeZone(value) {
+      new Intl.DateTimeFormat('en-US', { timeZone: value });
+      spreadsheetTimeZone = value;
+    },
     getId: () => 'test-spreadsheet'
   };
   const alerts = [];
@@ -232,6 +237,20 @@ function loadAppsScript({
     Logger: { log() {} },
     LockService: { getDocumentLock: () => ({ waitLock() {}, releaseLock() {} }) },
     Utilities: {
+      parseDate(value, timeZone) {
+        const target = Date.parse(`${value}T00:00:00Z`);
+        let instant = target;
+        for (let i = 0; i < 4; i++) {
+          const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+            timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+          }).formatToParts(new Date(instant)).map(part => [part.type, part.value]));
+          const local = Date.parse(`${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}Z`);
+          instant += target - local;
+          if (local === target) break;
+        }
+        return new Date(instant);
+      },
       formatDate: (date, timeZone, format) => format === 'yyyy-MM-dd'
         ? new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
         : date.toISOString().slice(0, 10),

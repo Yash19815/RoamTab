@@ -162,7 +162,7 @@ describe('Historical currency conversion', () => {
     assertSettles(ledger, settlements);
     const html = state.app.buildParticipantReportHtml_({ ledger, settlements, person: ledger.roster[0],
       currency: '₹', tripName: 'FX trip', generatedOn: '' });
-    assert.match(html, /₹831\.23/);
+    assert.match(html, /₹831</);
     assert.equal(state.fetches.length, 1);
     assert.equal(state.cacheWrites[0].key, 'FX_USD_INR_2026-01-09');
   });

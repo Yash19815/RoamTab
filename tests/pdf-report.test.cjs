@@ -26,9 +26,9 @@ describe('Participant PDF statement', () => {
     const report = getReport();
     const html = report.render();
     assert.match(html, /You will receive/);
-    assert.match(html, /₹65\.00/);
-    assert.match(html, /Cara<\/b> pays you ₹40\.00/);
-    assert.match(html, /Bob<\/b> pays you ₹25\.00/);
+    assert.match(html, /₹65</);
+    assert.match(html, /Cara<\/b> pays you ₹40</);
+    assert.match(html, /Bob<\/b> pays you ₹25</);
     assert.ok(html.indexOf('Your Settlement Actions') < html.indexOf('Your expense details'));
     assert.match(html, /Prepared for <strong>Alice<\/strong>/);
   });
@@ -37,9 +37,9 @@ describe('Participant PDF statement', () => {
     const report = getReport();
     const html = report.render(report.ledger.roster[1]);
     assert.match(html, /You need to pay/);
-    assert.match(html, /You pay <b>Alice<\/b> ₹25\.00/);
+    assert.match(html, /You pay <b>Alice<\/b> ₹25</);
     assert.match(html, /Your net balance/);
-    assert.match(html, /-₹25\.00/);
+    assert.match(html, /-₹25</);
   });
 
   it('has an explicit all-settled state with no payment instructions', () => {
@@ -85,7 +85,7 @@ describe('Participant PDF statement', () => {
     assert.equal((html.match(/class="expense-row"/g) || []).length, 500);
     assert.match(html, /Expense 500/);
     assert.match(html, /Your total share/);
-    assert.match(html, /₹500\.00/);
+    assert.match(html, /₹500</);
   });
 
   it('shows an empty personal expense state without inventing any expenses', () => {

@@ -1,8 +1,27 @@
-# Windows pre-push synchronization and Apps Script upload
+# Portable pre-push synchronization and Apps Script upload
 
 The complete hook is [`scripts/pre-push`](../scripts/pre-push). Install it in the source repository's `.git/hooks/pre-push`, without an extension. Git for Windows executes its `#!/bin/sh` interpreter even when `git push` starts in PowerShell.
 
-Each invocation copies the current working-tree `Code.js` from `D:\DATA\Documents(old)\projects\Main_Projects\travel-expense-excel` to `D:\DATA\Documents(old)\projects\Main_Projects\roamtab-template`, verifies the bytes, changes to the target directory, and runs `clasp push`. Missing inputs, copy errors, verification errors, and nonzero clasp exits abort the Git push with status 1. The script also rejects the current clasp English `Skipping push.` message, which can accompany status zero after a declined manifest update.
+Each invocation detects the source checkout with `git rev-parse --show-toplevel` and reads the template checkout from the environment variable `ROAMTAB_TEMPLATE_REPO`. It copies the source working-tree `Code.js` into that template checkout and verifies the bytes. It then runs `clasp push` in the template repository, followed by `clasp push` in the source repository for the main Apps Script project. Each upload uses its own repository's `.clasp.json` and ignore rules. Both configurations must exist before the copy or uploads begin. Missing inputs, copy errors, verification errors, and nonzero clasp exits abort the Git push with status 1. The script also rejects the current clasp English `Skipping push.` message for either project, which can accompany status zero after a declined manifest update.
+
+## Configure the template path
+
+Set `ROAMTAB_TEMPLATE_REPO` to your own template checkout's absolute path. Paths containing spaces and parentheses are supported. Windows paths may use forward slashes or backslashes. Missing values, relative paths, and paths resolving to this source checkout are rejected before copying or uploading anything. The hook reads exported environment variables; it does not load `.env` files.
+
+In Git Bash, macOS, or Linux:
+
+```sh
+export ROAMTAB_TEMPLATE_REPO='/absolute/path/to/roamtab-template'
+```
+
+Add the export to your shell profile if you want it in future terminals. In PowerShell:
+
+```powershell
+$env:ROAMTAB_TEMPLATE_REPO = 'C:\path\to\roamtab-template'
+[Environment]::SetEnvironmentVariable('ROAMTAB_TEMPLATE_REPO', $env:ROAMTAB_TEMPLATE_REPO, 'User')
+```
+
+The first PowerShell line sets the current terminal's environment; the second saves it for future Windows processes. Replace the example path before running either command. Restart existing terminals and Git GUIs after changing a saved environment variable so their hooks inherit it. Source checkout paths need no environment setting.
 
 ## Prerequisites
 
@@ -13,26 +32,29 @@ Each invocation copies the current working-tree `Code.js` from `D:\DATA\Document
    clasp --version
    ```
 
-2. Confirm the target repository exists and its `.clasp.json` points to the intended Apps Script project. `rootDir` must resolve to the target root containing `Code.js`. The hook checks for `.clasp.json`; it does not change that project mapping.
-3. Enable the Google Apps Script API in [Apps Script user settings](https://script.google.com/home/usersettings). Authenticate and inspect the target's upload list:
+2. Confirm the target repository exists. Verify `.clasp.json` in this repository points to the main Apps Script project and `.clasp.json` in the target repository points to the template project. Each `rootDir` must resolve to its repository root containing `Code.js`. The hook checks for both configurations; it does not change either project mapping.
+3. Enable the Google Apps Script API in [Apps Script user settings](https://script.google.com/home/usersettings). Authenticate and inspect both upload lists:
 
    ```powershell
-   Set-Location -LiteralPath 'D:\DATA\Documents(old)\projects\Main_Projects\roamtab-template'
+   $sourceRepo = (git rev-parse --show-toplevel)
+   Set-Location -LiteralPath $env:ROAMTAB_TEMPLATE_REPO
    clasp login
+   clasp status
+   Set-Location -LiteralPath $sourceRepo
    clasp status
    ```
 
-4. Run `clasp push` interactively in that directory once when ready to upload. Resolve any manifest confirmation before relying on an unattended hook. The hook closes stdin so clasp cannot read Git's ref records. The skip-message check targets current English clasp output; review it if upgrading clasp or changing its output language.
+4. Run `clasp push` interactively in each directory once when ready to upload. Resolve any manifest confirmation for both projects before relying on an unattended hook. The hook closes stdin for each upload so clasp cannot read Git's ref records. The skip-message check targets current English clasp output; review it if upgrading clasp or changing its output language.
 5. In Git Bash, verify `command -v node` and `command -v clasp` succeed. PowerShell aliases/functions are unavailable to the hook. npm normally supplies a `clasp` shell launcher alongside `clasp.cmd` and `clasp.ps1`. Restart terminals and Git GUIs after changing PATH.
 
-[`clasp push` uploads the target project's configured files](https://github.com/google/clasp), including its manifest and other nonignored files. It does not create a versioned web-app deployment. This hook copies only `Code.js`; keep the target's other required files synchronized separately. RoamTab's JSON dialog requires `TripJson.html`, which this hook does not copy.
+[`clasp push` uploads each project's configured files](https://github.com/google/clasp), including its manifest and other nonignored files. It does not create a versioned web-app deployment. The main upload includes this repository's `Code.js`, `TripJson.html`, and `appsscript.json`. This hook copies only `Code.js` into the template repository; keep the template's other required files synchronized separately. RoamTab's JSON dialog requires `TripJson.html`, which this hook does not copy.
 
 ## Install using Git Bash
 
 The tracked script is the complete source; copying through `pre-push.new` preserves it for future reinstalls. `.gitattributes` enforces LF line endings. An existing hook is backed up before replacement.
 
 ```bash
-cd 'D:/DATA/Documents(old)/projects/Main_Projects/travel-expense-excel' || exit 1
+cd "$(git rev-parse --show-toplevel)" || exit 1
 mkdir -p .git/hooks || exit 1
 if [ -e .git/hooks/pre-push ]; then
   cp -p .git/hooks/pre-push ".git/hooks/pre-push.backup.$(date +%Y%m%d%H%M%S)" || exit 1
@@ -51,7 +73,7 @@ PowerShell delegates `chmod` to Git Bash. Use the Git for Windows Bash executabl
 
 ```powershell
 $ErrorActionPreference = 'Stop'
-Set-Location -LiteralPath 'D:\DATA\Documents(old)\projects\Main_Projects\travel-expense-excel'
+Set-Location -LiteralPath (git rev-parse --show-toplevel)
 $gitBash = 'C:\Program Files\Git\bin\bash.exe'
 New-Item -ItemType Directory -Path '.git/hooks' -Force | Out-Null
 if (Test-Path -LiteralPath '.git/hooks/pre-push') {
@@ -81,6 +103,7 @@ Reinstall after changing `scripts/pre-push`: the installed hook is a local copy.
    cmp scripts/pre-push .git/hooks/pre-push
    sh -n .git/hooks/pre-push
    command -v clasp
+   printf 'Template checkout: %s\n' "$ROAMTAB_TEMPLATE_REPO"
    ```
 
    Expect `.git/hooks`, matching files, and exit status 0 from `cmp` and `sh -n`. The hook needs an LF-terminated first line and no UTF-8 BOM. `[ -f ... ]` and quoted paths handle spaces and parentheses.
@@ -91,7 +114,7 @@ Reinstall after changing `scripts/pre-push`: the installed hook is a local copy.
    node --test tests/pre-push.test.cjs
    ```
 
-   They use temporary source/target directories with spaces and parentheses, and a fake clasp. They verify copy success, overwrite behavior, target working directory, EOF on clasp stdin, missing inputs, copy failure, nonzero clasp failure, and a status-zero skipped upload. They never touch the real target or Google.
+   They run the unchanged hook in real temporary Git checkouts with environment-configured template paths and a fake clasp. They verify copy success, overwrite behavior, template-before-main upload order, both working directories, EOF on both clasp inputs, missing inputs/configurations, invalid environment paths, native Windows paths, copy failure, upload failure for either project, and a status-zero skipped upload for either project. A failed template upload prevents the main upload. They never touch the real target or Google.
 
 3. When ready for an actual copy and upload, invoke the installed hook manually:
 
@@ -101,25 +124,27 @@ Reinstall after changing `scripts/pre-push`: the installed hook is a local copy.
    printf 'Hook exit: %s\n' "$hook_status"
    ```
 
-   Expect exit 0 and clasp's upload or already-up-to-date output. A nonzero clasp exit or detected skipped upload must yield hook exit 1. This step changes the real target file and can upload to Google; it does not push Git refs.
+   Expect exit 0 and clasp's upload or already-up-to-date output for both projects. A nonzero clasp exit or detected skipped upload from either project must yield hook exit 1. This step changes the real target file and can upload both projects to Google; it does not push Git refs.
 
 4. Verify local bytes and inspect the actual project:
 
    ```bash
-   cmp 'D:/DATA/Documents(old)/projects/Main_Projects/travel-expense-excel/Code.js' \
-       'D:/DATA/Documents(old)/projects/Main_Projects/roamtab-template/Code.js'
-   cd 'D:/DATA/Documents(old)/projects/Main_Projects/roamtab-template' || exit 1
+   source_repo=$(git rev-parse --show-toplevel) || exit 1
+   cmp "$source_repo/Code.js" "$ROAMTAB_TEMPLATE_REPO/Code.js"
+   cd "$ROAMTAB_TEMPLATE_REPO" || exit 1
+   clasp open-script
+   cd "$source_repo" || exit 1
    clasp open-script
    ```
 
-   `cmp` must return 0. Check `Code.js` in the Apps Script editor for a known current function/change. A zero clasp exit alone is not a remote byte-for-byte verification.
+   `cmp` must return 0. Check `Code.js` in both Apps Script editors for a known current function/change. A zero clasp exit alone is not a remote byte-for-byte verification.
 
 5. From the source repository, run your normal `git push`. The hook's copy and clasp messages should appear before Git sends updates. The hook runs once per invocation, regardless of branch or remote. The [Git pre-push contract](https://git-scm.com/docs/githooks#_pre_push) aborts ref updates when the hook exits nonzero. Do not use `git push --dry-run` as an upload-free check: hooks can still execute during a dry run.
 
 ## Behavior to account for
 
-- The hook uploads the working-tree file, including uncommitted edits; it does not extract the commit being pushed. It also runs on branch deletions or a push that has no file changes.
+- The hook uploads both projects from their working trees, including uncommitted edits; it does not extract the commit being pushed. It also runs on branch deletions or a push that has no file changes.
 - The target overwrite is intentional. No target commit or target Git push is performed. A failed upload leaves the copied file in the target for inspection and retry.
-- Apps Script upload happens before the Git push finishes. A later network error or Git server rejection does not undo the upload.
+- Apps Script uploads happen before the Git push finishes. A main-project upload failure does not undo the earlier template upload. A later network error or Git server rejection does not undo either upload.
 - `git push --no-verify` bypasses pre-push hooks. Every clone needs its own installation.
 - Removing the local override with `git config --local --unset core.hooksPath` restores inherited/default hook-directory behavior; it does not delete the installed hook.

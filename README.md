@@ -106,13 +106,13 @@ Saved **Records** survive initialization. Use **New Trip** for the next journey:
 2. Navigate to **Extensions** → **Apps Script**.
 3. Replace all content in `Code.gs` with the code from [`Code.js`](Code.js).
    Add an HTML file named `TripJson` in Apps Script and copy [`TripJson.html`](TripJson.html) into it for JSON downloads and imports.
-4. In Apps Script **Project Settings**, enable the manifest editor and copy [`appsscript.json`](appsscript.json) into the project's `appsscript.json` to match the V8 runtime and timezone.
+4. In Apps Script **Project Settings**, enable the manifest editor and copy [`appsscript.json`](appsscript.json) into the project's `appsscript.json` to match the V8 runtime. The manifest uses UTC as a neutral script default; trip dates and reports use the timezone selected in Setup.
 5. Save, select `setup` in the function dropdown, and click **Run** to initialize the blank sheet and authorize the script.
 6. Reload Google Sheets to load the **Expense Splitter** menu, then follow the workflow below.
 
 ### Daily workflow
 
-1. Fill in the trip name, participant count, base currency, and unique participant names on **Setup**. Emails are optional. Use names without commas so subgroup selections remain unambiguous.
+1. Fill in the trip name, participant count, base currency, timezone in **Setup!E4**, and unique participant names on **Setup**. Emails are optional. Use names without commas so subgroup selections remain unambiguous.
 2. Select **Expense Splitter → Confirm / Update Setup**, or tick `Setup!B6` / `Setup!B7` on mobile.
 
     Adding names below the active roster automatically raises **Number of People**, up to 15. You can also change `Setup!B3` directly. Reducing the count deactivates extra rows but preserves their names and emails; raising it restores those entries.
@@ -140,9 +140,12 @@ Configure the trip and the group:
 | `Setup!B7` | **Confirm / Update Setup** checkbox action; resets after use | ☐ FALSE |
 | `Setup!E6` | **Save Trip** checkbox action; saves a complete JSON snapshot in Records and resets after use | ☐ FALSE |
 | `Setup!E3` | Current trip ID; maintained by the script to update the same archive on repeated saves | — |
+| `Setup!E4` | Timezone dropdown; also accepts other supported timezone names | Current spreadsheet timezone |
 | `Setup!A9:C…` | Roster: `#` · `Name` · `Email (optional)` — rows scale with B3 | — |
 
 > Emails are **optional** — only people with an email address receive PDF reports; everyone else is cleanly skipped and logged.
+
+Choose **Setup!E4** on desktop or mobile. Suggestions cover common timezones; type another supported name such as `America/Argentina/Buenos_Aires` when needed. The selection updates the [spreadsheet timezone](https://developers.google.com/apps-script/reference/spreadsheet/spreadsheet#setSpreadsheetTimeZone(String)) for all collaborators. Existing expense calendar dates remain unchanged, including across daylight saving offsets. FX dates, report dates, and delivery timestamps follow the selected timezone. Invalid selections restore the previous setting. Changing timezone requires setup confirmation again. Initialization and New Trip keep the current spreadsheet timezone. Reloading an existing tracker adds this control without clearing inputs.
 
 ### 2️⃣ Expenses
 Enter expenses in columns **A–F**; everything else is computed live:
@@ -189,7 +192,7 @@ Each saved trip occupies one row. Columns A:E show the trip ID, name, UTC save t
 
 Snapshots include trip name, base currency, participant count, all 15 roster slots (including inactive names and emails), confirmation, and all 500 supported expense input rows in A:F. Draft entries, interior blank rows, all split modes, row currencies, and actual date values survive a round trip. Only trailing empty rows are omitted. Formulas are saved as their current values. JSON schema version 2 adds row currencies; version 1 files still load with blank inherited currencies. Derived output is recalculated on load; FX cache entries and email delivery statuses are not exported. Loading historical trips can therefore fetch rates again.
 
-Incomplete names and draft expenses can be saved. Participant count must still be 2–15. Invalid or unsupported JSON is rejected before replacing inputs. Loading requires the same spreadsheet timezone as the saved trip, preserving date instants and calendar display. JSON contains participant emails and expense details, so share files with the same care as the spreadsheet.
+Incomplete names and draft expenses can be saved. Participant count must still be 2–15. Invalid or unsupported JSON is rejected before replacing inputs. Loading requires the same spreadsheet timezone as the saved trip, preserving date instants and calendar display; select that timezone in **Setup!E4** before loading or importing. JSON contains participant emails and expense details, so share files with the same care as the spreadsheet.
 
 On mobile, `Setup!E6` saves to Records. File download/import and record-management menu actions use desktop Google Sheets. JSON files download through the browser; no Drive file or email is created.
 
@@ -230,6 +233,11 @@ Choose **Expense Splitter → Enable Automatic Currency Conversion** once from d
 Split and FX errors appear in **Send Reports!A1** even before confirmation. Invalid rows are excluded from live totals, and settlement/PDF sending remains blocked until all errors are resolved.
 
 ### Settlement Engine (Exact Minimum Transfers)
+
+Payments use **whole currency units** with ordinary nearest-number rounding: ₹455.76 becomes ₹456, ₹455.23 becomes ₹455, and ₹455.50 becomes ₹456. Payments below half a unit round to zero and disappear. The engine first calculates the exact plan, rounds each payment once for both parties, and rebuilds their payment balances. It then finds the minimum transfer count for those rounded balances. Debtors and creditors always agree on each payment, and the rounded group balances still sum to zero. When someone has several payments, their net balance is the sum of those rounded payments.
+
+Expense inputs, FX conversion, shares, and saved JSON retain integer minor-unit precision. Calculated sheet cells and PDF amounts display without decimals. Paid/share totals keep their exact stored values; the live summary and report net balances include payment rounding. Rounded displayed expense rows may therefore differ from displayed totals. Sheet instructions and PDF instructions use the same whole-unit plan.
+
 The solver finds the largest number of independent groups whose net balances sum to zero. It then settles each group separately. If there are `n` people with nonzero balances and `g` groups, the minimum number of transfers is `n - g`.
 
 ```
@@ -300,7 +308,7 @@ The first commands check syntax and run local tests. `clasp status` lists upload
 
 Run `setup()` only when initializing a blank development spreadsheet. For subsequent code updates, reload the sheet and use **2. Recalculate Live Expenses** or **Confirm All Expenses** as needed. For automatic foreign conversion, select **Enable Automatic Currency Conversion** once and authorize the edit trigger and external requests. Edit-trigger behavior, actual PDF conversion, and email delivery require checks in Google Sheets.
 
-For local Windows push automation, use [`scripts/pre-push`](scripts/pre-push) and the [Git Bash/PowerShell setup and verification guide](docs/pre-push-setup.md). The hook overwrites `roamtab-template/Code.js` from this working tree and runs `clasp push` in that repository before allowing the source Git push. It aborts on copy or upload failures. Install it separately in each clone; the guide covers PATH, authentication, and the upload behavior. `.claspignore` excludes local automation scripts from source-project uploads.
+For push automation, use [`scripts/pre-push`](scripts/pre-push) and the [Git Bash/PowerShell setup and verification guide](docs/pre-push-setup.md). Set the environment variable **`ROAMTAB_TEMPLATE_REPO`** to the absolute path of your template checkout. The hook detects this source checkout through Git; no developer-specific paths are embedded in it. It overwrites the template's `Code.js` from this working tree, uploads the template with `clasp push`, then uploads the main Apps Script project from this repository. Each upload uses that repository's `.clasp.json` and ignore rules. Missing/invalid path configuration, copy errors, upload failures, or skipped uploads block the Git push. Install it separately in each clone and reinstall after hook changes; the guide covers environment setup, PATH, authentication, and upload behavior. `.claspignore` excludes local automation scripts from source-project uploads.
 
 ---
 
@@ -322,6 +330,7 @@ travel-expense-excel/
     ├── optimal-settlements.test.cjs # Exact minima, explanations, and benchmarks
     ├── settlements.test.cjs  # Settlement validity and minimum-count checks
     ├── pdf-report.test.cjs   # Personal statement content and privacy checks
+    ├── timezone-rounding.test.cjs # Timezone selection, calendar dates, and whole-unit payments
     ├── trip-records.test.cjs # Archive, JSON round-trip, blank trip, and deletion checks
     ├── trip-json-dialog.test.cjs # Download content and import dialog behavior
     ├── preview-pdf.cjs       # Generates sample report HTML without sending email
