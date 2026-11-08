@@ -8,7 +8,10 @@ fail() {
 
 SOURCE_REPO=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'Cannot detect source repository; run from inside the source checkout.'
 TARGET_REPO=${ROAMTAB_TEMPLATE_REPO:-}
-[ -n "$TARGET_REPO" ] || fail 'Set ROAMTAB_TEMPLATE_REPO to the absolute path of your template checkout before pushing.'
+if [ -z "$TARGET_REPO" ]; then
+  TARGET_REPO=$(git config --local --get roamtab.templateRepo 2>/dev/null) || TARGET_REPO=''
+fi
+[ -n "$TARGET_REPO" ] || fail 'Set ROAMTAB_TEMPLATE_REPO or run git config --local roamtab.templateRepo with the absolute path of your template checkout before pushing.'
 case "$TARGET_REPO" in
   /*|[A-Za-z]:/*|[A-Za-z]:\\*) ;;
   *) fail 'ROAMTAB_TEMPLATE_REPO must be an absolute path.' ;;

@@ -2,7 +2,7 @@
 
 The complete hook is [`scripts/pre-push`](../scripts/pre-push). Install it in the source repository's `.git/hooks/pre-push`, without an extension. Git for Windows executes its `#!/bin/sh` interpreter even when `git push` starts in PowerShell.
 
-Each invocation detects the source checkout with `git rev-parse --show-toplevel` and reads the template checkout from the environment variable `ROAMTAB_TEMPLATE_REPO`. It copies the source working-tree `Code.js` into that template checkout and verifies the bytes. It then runs `clasp push` in the template repository, followed by `clasp push` in the source repository for the main Apps Script project. Each upload uses its own repository's `.clasp.json` and ignore rules. Both configurations must exist before the copy or uploads begin. Missing inputs, copy errors, verification errors, and nonzero clasp exits abort the Git push with status 1. The script also rejects the current clasp English `Skipping push.` message for either project, which can accompany status zero after a declined manifest update.
+Each invocation detects the source checkout with `git rev-parse --show-toplevel` and reads the template checkout from the environment variable `ROAMTAB_TEMPLATE_REPO`, falling back to the repository-local Git setting `roamtab.templateRepo` when the variable is unset or empty. It copies the source working-tree `Code.js` into that template checkout and verifies the bytes. It then runs `clasp push` in the template repository, followed by `clasp push` in the source repository for the main Apps Script project. Each upload uses its own repository's `.clasp.json` and ignore rules. Both configurations must exist before the copy or uploads begin. Missing inputs, copy errors, verification errors, and nonzero clasp exits abort the Git push with status 1. The script also rejects the current clasp English `Skipping push.` message for either project, which can accompany status zero after a declined manifest update.
 
 ## Configure the template path
 
@@ -23,6 +23,14 @@ $env:ROAMTAB_TEMPLATE_REPO = 'C:\path\to\roamtab-template'
 
 The first PowerShell line sets the current terminal's environment; the second saves it for future Windows processes. Replace the example path before running either command. Restart existing terminals and Git GUIs after changing a saved environment variable so their hooks inherit it. Source checkout paths need no environment setting.
 
+For an existing VS Code or Git GUI session, save the same path in this clone's local Git configuration:
+
+```sh
+git config --local roamtab.templateRepo "/absolute/path/to/roamtab-template"
+```
+
+On Windows, replace the example with your checkout's absolute Windows path, quoted if it contains spaces. This setting takes effect on the next push without restarting the app. It lives in `.git/config` and is not committed or shared with other contributors. An exported `ROAMTAB_TEMPLATE_REPO` still overrides it; an invalid nonempty environment value is rejected rather than silently ignored. Remove the fallback with `git config --local --unset roamtab.templateRepo`.
+
 ## Prerequisites
 
 1. Install Git for Windows, Node.js supported by your clasp release, and clasp:
@@ -37,7 +45,8 @@ The first PowerShell line sets the current terminal's environment; the second sa
 
    ```powershell
    $sourceRepo = (git rev-parse --show-toplevel)
-   Set-Location -LiteralPath $env:ROAMTAB_TEMPLATE_REPO
+   $templateRepo = if ($env:ROAMTAB_TEMPLATE_REPO) { $env:ROAMTAB_TEMPLATE_REPO } else { git config --local --get roamtab.templateRepo }
+   Set-Location -LiteralPath $templateRepo
    clasp login
    clasp status
    Set-Location -LiteralPath $sourceRepo
@@ -104,9 +113,10 @@ Reinstall after changing `scripts/pre-push`: the installed hook is a local copy.
    sh -n .git/hooks/pre-push
    command -v clasp
    printf 'Template checkout: %s\n' "$ROAMTAB_TEMPLATE_REPO"
+   git config --local --get roamtab.templateRepo
    ```
 
-   Expect `.git/hooks`, matching files, and exit status 0 from `cmp` and `sh -n`. The hook needs an LF-terminated first line and no UTF-8 BOM. `[ -f ... ]` and quoted paths handle spaces and parentheses.
+   Expect `.git/hooks`, matching files, and exit status 0 from `cmp` and `sh -n`. At least one path setting must be present; `git config --get` returns status 1 when no fallback is set. The hook needs an LF-terminated first line and no UTF-8 BOM. `[ -f ... ]` and quoted paths handle spaces and parentheses.
 
 2. Run the isolated regression tests:
 
@@ -130,8 +140,9 @@ Reinstall after changing `scripts/pre-push`: the installed hook is a local copy.
 
    ```bash
    source_repo=$(git rev-parse --show-toplevel) || exit 1
-   cmp "$source_repo/Code.js" "$ROAMTAB_TEMPLATE_REPO/Code.js"
-   cd "$ROAMTAB_TEMPLATE_REPO" || exit 1
+   template_repo=${ROAMTAB_TEMPLATE_REPO:-$(git config --local --get roamtab.templateRepo)}
+   cmp "$source_repo/Code.js" "$template_repo/Code.js"
+   cd "$template_repo" || exit 1
    clasp open-script
    cd "$source_repo" || exit 1
    clasp open-script

@@ -218,3 +218,34 @@ it('fails outside a Git checkout before copying or uploading', t => {
   assert.equal(existsSync(path.join(state.target, 'Code.js')), false);
   assert.equal(existsSync(state.log), false);
 });
+
+function configureTemplate(state, value) {
+  const result = spawnSync('git', ['-C', state.source, 'config', '--local', 'roamtab.templateRepo', value], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || String(result.error));
+}
+
+it('uses the local Git template path when the launching app has no environment variable', t => {
+  const state = fixture(t);
+  configureTemplate(state, shellPath(state.target));
+  const result = state.run({ ROAMTAB_TEMPLATE_REPO: undefined });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(state.log, 'utf8').trim().split('\n').length, 4);
+  assert.deepEqual(readFileSync(path.join(state.source, 'Code.js')), readFileSync(path.join(state.target, 'Code.js')));
+});
+
+it('gives the environment variable precedence over the local Git template path', t => {
+  const state = fixture(t);
+  configureTemplate(state, shellPath(path.join(state.root, 'missing template')));
+  const result = state.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(state.log, 'utf8').trim().split('\n').length, 4);
+});
+
+it('does not hide an invalid environment override by using the local Git fallback', t => {
+  const state = fixture(t);
+  configureTemplate(state, shellPath(state.target));
+  const result = state.run({ ROAMTAB_TEMPLATE_REPO: 'relative/template' });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /must be an absolute path/);
+  assert.equal(existsSync(state.log), false);
+});
