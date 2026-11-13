@@ -1401,7 +1401,7 @@ function updateExpensesStructure() {
 
   sheet.getRange(2, COL.SPLIT, MAX_DATA_ROWS, 1)
     .clearDataValidations().setNumberFormat('@')
-    .setNote('Equal: All, blank, or Rahul, Neha. Percentages: Rahul 30, Neha 70. ' +
+    .setNote('Equal: All, blank, or Rahul, Neha. Exclude: -Amit or -Amit, -Neha. Percentages: Rahul 30, Neha 70. ' +
       'Exact amounts in row currency, by roster position: 400, 500, 100.');
   sheet.getRange(2, COL.CURRENCY, MAX_DATA_ROWS, 1)
     .clearDataValidations().setNumberFormat('@')
@@ -1558,6 +1558,19 @@ function parseSplitAmong_(splitValue, roster, amountMinor, sourceAmountMinor = a
   // Prefer a complete name match, so roster names such as "Person 4" remain usable.
   const namedEqual = !value || value.toLocaleLowerCase() === 'all' ||
     parts.every(part => !part || byName.has(part.toLocaleLowerCase()));
+  const exclusions = parts.filter(Boolean);
+  if (!namedEqual && exclusions.length && exclusions.every(part => part.startsWith('-'))) {
+    const excludedIds = new Set();
+    exclusions.forEach(part => {
+      const name = part.slice(1).trim();
+      const person = byName.get(name.toLocaleLowerCase());
+      if (!person) throw new Error(`Excluded name '${name}' is not a roster member.`);
+      excludedIds.add(person.id);
+    });
+    const included = roster.filter(person => !excludedIds.has(person.id));
+    if (!included.length) throw new Error('Split Among excludes every roster member.');
+    return { mode: 'equal', included, allocations: allocateEqualMinor_(amountMinor, included) };
+  }
   if (!namedEqual && parts.some(part => percentage.test(part))) {
     const seen = new Set();
     const weights = parts.map(part => {

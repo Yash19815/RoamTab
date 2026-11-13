@@ -218,6 +218,7 @@ All three modes use **Expenses!E**, with no separate split columns:
 * **Named percentages:** `Rahul 30, Neha 40, Amit 30` assigns 30%, 40%, and 30%. An optional `%` suffix and up to four decimal places are supported. Percentages must be nonnegative and sum to exactly 100%; otherwise, for example, `Row X: Split percentages total 90%, must equal 100%`. Unlisted people receive zero shares.
 * **"All" or blank Split Among:** cost splits equally across the whole roster.
 * **Comma-separated names** (`Rahul, Neha`): cost splits only within that subgroup.
+* **Exclude names** (`-Amit` or `-Amit, -Neha`): cost splits equally among everyone else. Excluded people receive zero expense shares. Names ignore case and surrounding spaces; repeated exclusions count once. Prefix every excluded name with `-`; do not mix exclusions with names, amounts, or percentages. Unknown names and excluding the entire roster produce row errors. If an excluded person paid the bill, their payment still counts toward their net balance.
 * **Remainder handling:** percentage and equal shares round down to minor units, then distribute leftover units by ascending participant ID among people with a positive share. Exact foreign splits preserve the entered proportions after conversion and reconcile the same way. Allocations always equal the converted bill, and group balances sum to zero. Zero-weight participants never receive a remainder.
 
 ### Historical FX Conversion

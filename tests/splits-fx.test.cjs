@@ -22,6 +22,39 @@ function foreign(overrides = {}) {
 }
 
 describe('Three split modes', () => {
+  it('excludes one of eleven people while preserving the excluded payer credit', () => {
+    const roster = getMockRoster(11);
+    roster[2].name = 'Amit';
+    const { app } = loadAppsScript({ roster, expenses: [
+      getMockExpense({ amount: 100, payer: 'Amit', split: '-amit' })
+    ] });
+    const ledger = app.buildLedger_();
+    assert.deepEqual(plain(ledger.errors), []);
+    assert.deepEqual([...ledger.spent.values()], [1000, 1000, 0, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000]);
+    assert.equal(ledger.balances.get(3), 10000);
+    assertLedgerConservesMoney(ledger);
+    assertSettles(ledger, app.calculateOptimalSettlements_(ledger));
+  });
+
+  it('supports multiple exclusions, spaces, duplicates, and deterministic remainders', () => {
+    const { app } = loadAppsScript({ roster: getMockRoster(4), expenses: [
+      getMockExpense({ amount: 0.05, split: ' - cara, - Person 4, -CARA, ' })
+    ] });
+    const ledger = app.buildLedger_();
+    assert.deepEqual(plain(ledger.errors), []);
+    assert.deepEqual([...ledger.spent.values()], [3, 2, 0, 0]);
+    assertLedgerConservesMoney(ledger);
+  });
+
+  for (const split of ['-Typo', '-', '-Alice, -Bob, -Cara', '-Alice, Bob', '-Alice, Bob 100']) {
+    it(`rejects invalid exclusions ${JSON.stringify(split)}`, () => {
+      const { app } = loadAppsScript({ expenses: [getMockExpense({ split })] });
+      const ledger = app.buildLedger_();
+      assert.equal(ledger.errors.length, 1);
+      assert.equal(ledger.totalMinor, 0);
+    });
+  }
+
   it('maps exact amounts by roster position and leaves trailing people at zero', () => {
     const { app } = loadAppsScript({ roster: getMockRoster(4), expenses: [
       getMockExpense({ amount: 1000, split: '400, 500, 100', payer: 'Person 4' })
