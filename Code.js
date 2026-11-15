@@ -22,6 +22,15 @@
  * F: Currency (blank inherits Setup!B4)
  * G onward: Generated per-person net values
  *
+ * OPTIONAL MOBILE UPGRADE
+ * The layout above is the classic workbook. upgradeMobileWorkbook() checkpoints
+ * inputs before adding G: Category, H: hidden Expense ID, I:W: generated person
+ * outputs, X: validation warnings, and Y: duplicate acknowledgement.
+ * Dashboard, Quick Entry, Budgets, History, and _Tracker State supplement the
+ * existing sheets. Upgraded edits use the owner-run onAuthorizedEdit(e) route.
+ * Do not initialize or upload classic-only code over an upgraded workbook.
+ * See docs/architecture.md for archive schemas, journal phases, and entry points.
+ *
  * LIVE SUMMARY POSITION
  * Send Reports!H:K always contains the live summary, even before confirmation.
  * Expenses contains inputs A:F and dynamically sized participant net columns.

@@ -1,4 +1,6 @@
-# Calculation Tests
+# Local Tests and Release Checks
+
+The recorded 2026-11-15 local run passed 288 tests, including 35 mobile-workbook cases. See the [verification record](../docs/plans/mobile-expense-implementation.md#verification--2026-11-15). Actual Google permissions, trigger delivery, mobile rendering/navigation, and email conversion/delivery remain separate release checks below.
 
 Run from the repository root with Node.js 22 or newer:
 

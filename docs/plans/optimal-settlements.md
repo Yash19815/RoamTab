@@ -1,5 +1,7 @@
 # Exact Settlement Plans and Explanations
 
+This is the historical design record for the exact settlement engine. The current [architecture reference](../architecture.md) also covers currency conversion, whole-unit payment balances, archive schemas, and the optional mobile layout. The minimum-transfer solver remains shared by both workbook modes.
+
 ## Confirmed Understanding
 
 - Trip participants need the fewest possible transfers, not an approximation.
@@ -30,6 +32,8 @@
 ## Final Design
 
 Roster update revision: new name edits can grow the active count to 15; explicit count reductions preserve inactive names and emails. Confirmation updates the flag before rebuilding outputs. The live summary now resides in Send Reports!H:K and refreshes before confirmation; expense inputs A:E remain intact. The existing exact solver and PDF calculations are unchanged.
+
+Later integration retains those original inputs and adds Currency F in classic mode. The optional mobile upgrade adds Category G and Expense ID H, starts participant outputs at I, and adds strict invalid-row/duplicate confirmation gates. Final payment plans use a balanced whole-unit ledger; raw expenses and spending totals retain minor-unit precision. Minimum transfer counts apply to the balanced ledger supplied to the solver. These changes do not replace the subset-DP algorithm below.
 
 Sort nonzero balances by stable person ID. For each subset, store its balance sum, the largest number of zero-sum prefixes reachable in an ordering, and a predecessor. The recurrence removes one participant and adds one completed group when the current subset sums to zero. This takes O(n × 2^n) time and O(2^n) memory.
 

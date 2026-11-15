@@ -29,3 +29,7 @@ Submission receipts bind values to their original trip and a draft generation. A
 - Runtime packaging remains Code.js, TripJson.html, and appsscript.json. No additional runtime file needs copying to the template checkout.
 
 No live Google upload, email delivery, or Android/iPhone validation was performed. Authorization, actual protections and trigger delivery, native navigation/charts, Apps Script timing, and controlled PDF delivery remain the release gates in [tests/README.md](../../tests/README.md#mobile-workbook-tests-and-release-checks). Activation instructions are in [README.md](../../README.md#mobile-workbook-upgrade).
+
+## Documentation Maintenance — 2026-11-15
+
+The documentation refresh separates classic and upgraded workbook behavior, documents the implemented function/state contracts, adds deployment and compatible-rollback instructions, and corrects the contributor guide's timezone and test-framework descriptions. Runtime changes in this refresh are comments only. The historical 288-test result above remains unchanged; documentation checks cover local links/anchors, desktop menu coverage, syntax, and whitespace. Current clasp command names were checked against the official reference; no clasp binary was available locally and no Google upload was attempted.

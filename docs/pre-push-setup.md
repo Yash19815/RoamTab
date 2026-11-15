@@ -4,6 +4,12 @@ The complete hook is [`scripts/pre-push`](../scripts/pre-push). Install it in th
 
 Each invocation detects the source checkout with `git rev-parse --show-toplevel` and reads the template checkout from the environment variable `ROAMTAB_TEMPLATE_REPO`, falling back to the repository-local Git setting `roamtab.templateRepo` when the variable is unset or empty. It copies the source working-tree `Code.js` into that template checkout and verifies the bytes. It then runs `clasp push --force` in the template repository, followed by `clasp push --force` in the source repository for the main Apps Script project. Each upload uses its own repository's `.clasp.json` and ignore rules. Both configurations must exist before the copy or uploads begin. Missing inputs, copy errors, verification errors, and nonzero clasp exits abort the Git push with status 1. The script also rejects the current clasp English `Skipping push.` message for either project if an upload is unexpectedly skipped.
 
+## Source Upload Versus Workbook Upgrade
+
+The runtime remains Code.js, TripJson.html, and appsscript.json. The mobile implementation stays in Code.js, so the existing copy step transfers it without adding another runtime module. The hook does not run `node --test`, authorize spreadsheet services, install triggers, migrate sheets, or verify the public template's behavior.
+
+Run local checks before exercising the hook. After upload, the owner of each intended spreadsheet must separately run **Upgrade / Repair Mobile Workbook**, authorize the dispatcher, and complete the [native/Google-service release checks](../tests/README.md#mobile-workbook-tests-and-release-checks). Existing copies remain classic until upgraded; updating the template script does not retroactively migrate spreadsheets people already copied. See [deployment and release](../README.md#deployment-and-release) for the complete activation sequence.
+
 ## Configure the template path
 
 Set `ROAMTAB_TEMPLATE_REPO` to your own template checkout's absolute path. Paths containing spaces and parentheses are supported. Windows paths may use forward slashes or backslashes. Missing values, relative paths, and paths resolving to this source checkout are rejected before copying or uploading anything. The hook reads exported environment variables; it does not load `.env` files.
@@ -48,9 +54,9 @@ On Windows, replace the example with your checkout's absolute Windows path, quot
    $templateRepo = if ($env:ROAMTAB_TEMPLATE_REPO) { $env:ROAMTAB_TEMPLATE_REPO } else { git config --local --get roamtab.templateRepo }
    Set-Location -LiteralPath $templateRepo
    clasp login
-   clasp status
+   clasp show-file-status
    Set-Location -LiteralPath $sourceRepo
-   clasp status
+   clasp show-file-status
    ```
 
 4. Review each checkout's `appsscript.json` before enabling automatic uploads. The hook uses `clasp push --force` so that each project's local manifest replaces its remote manifest without an interactive prompt. This includes runtime, timezone, and any explicitly configured permissions. Clasp 3.4.1 otherwise skips a changed manifest in noninteractive mode, even with exit status zero. No interactive first upload is required for manifest confirmation. Authentication and API validation still apply. The hook closes stdin for each upload so clasp cannot read Git's ref records. The skip-message check targets current English clasp output; review it if upgrading clasp or changing its output language.
@@ -159,3 +165,11 @@ Reinstall after changing `scripts/pre-push`: the installed hook is a local copy.
 - Apps Script uploads happen before the Git push finishes. A main-project upload failure does not undo the earlier template upload. A later network error or Git server rejection does not undo either upload.
 - `git push --no-verify` bypasses pre-push hooks. Every clone needs its own installation.
 - Removing the local override with `git config --local --unset core.hooksPath` restores inherited/default hook-directory behavior; it does not delete the installed hook.
+
+## Recovering a Partial Upload
+
+If the template upload succeeds but the main upload fails, the projects can temporarily contain different source revisions. The hook aborts Git ref updates but does not undo the earlier source upload. Preserve its output, inspect both project mappings/manifests and local runtime files, resolve the failure, and rerun the reviewed upload workflow. A zero clasp exit is still not remote byte-for-byte proof.
+
+If a source rollback is required, restore a compatible revision of all affected runtime files and review each project's manifest before uploading. A version 3 workbook must retain code that understands Category G, Expense ID H, and generated output from I. Restoring classic-only code onto that layout can overwrite input metadata. Use a pre-upgrade spreadsheet copy for a full layout rollback; History restores inputs through the current schema rather than downgrading it.
+
+Source upload failure and interrupted sheet replacement are different recovery cases. For unfinished data migration/restoration, pause editing and use **Recover Interrupted Workbook Operation** or **History!B10** in the affected spreadsheet. Do not clear maintenance properties or delete existing protections to make the next upload appear successful.

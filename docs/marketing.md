@@ -2,6 +2,8 @@
 
 Positioning: An open-source Google Sheets trip expense splitter with flexible splits, currency conversion, minimum-transfer settlements, and personal PDF statements.
 
+Implementation status: the optional mobile workbook adds guided entry, budget charts, validation, and recovery in the local source. The recorded automated verification is 288 passing tests on 2026-11-15. Upload, actual permission/trigger behavior, native Android/iPhone use, and refreshed screenshots remain release checks. Do not describe the public template or mobile compatibility as verified until those checks are recorded; follow the [release workflow](../README.md#deployment-and-release).
+
 Primary audience: the person organizing expenses for a friends or family trip. Secondary audience: Google Sheets power users and Apps Script contributors. These are hypotheses from the README, not validated user research.
 
 ## First month
@@ -35,10 +37,10 @@ Track weekly GitHub visitors, clones, referrers, setup questions, and voluntary 
 
 Template copies and completed trips are not measured by repository traffic. Do not add tracking to personal spreadsheets without a separate privacy decision. Treat stars as a secondary signal.
 
-## Cleanup proposal
+## Generated Preview Hygiene
 
 The root already separates runtime files, assets, docs, scripts, and tests. Keep Code.js, TripJson.html, and appsscript.json in place for Apps Script deployment.
 
-The main clutter candidate is tests/previews/: 18 tracked generated HTML/PDF/PNG artifacts totaling 1,557,837 bytes. Some images may duplicate presentation assets, but their equivalence has not been established. Preserve assets/ images used by README.
+The earlier cleanup proposal identified 18 tracked generated HTML/PDF/PNG previews totaling 1,557,837 bytes. Those counts describe that historical snapshot, not the current checkout. As checked on 2026-11-15, `git ls-files tests/previews` returns no tracked preview files and `.gitignore` excludes that directory. Preserve assets/ images used by README.
 
-Approved cleanup: untrack all 18 generated preview outputs and ignore `tests/previews/`, preserving local copies and curated `assets/` screenshots. The preview script regenerates HTML; PDF/PNG exports require browser printing or rendering. Existing Git history retains previously committed artifacts.
+Keep generated output in `tests/previews/` and intentional documentation screenshots in `assets/`. The preview script regenerates HTML; PDF/PNG exports require browser printing or rendering. Earlier tracked outputs remain in Git history. No further deletion is required for this documentation update.

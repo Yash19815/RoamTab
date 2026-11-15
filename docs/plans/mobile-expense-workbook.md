@@ -4,6 +4,8 @@ Date: 2026-11-15
 Status: Product scope and review-added operating limits approved by the user. Peer review APPROVED for the design specification.
 Implementation status: Implemented locally; automated verification recorded in mobile-expense-implementation.md. Apps Script and native Android/iPhone release checks remain pending.
 
+This document records the approved product design and review decisions. Use the [architecture reference](../architecture.md) for the implemented function/storage contracts and [README](../../README.md#mobile-workbook-upgrade) for activation. Implementation details below are clarified where behavior differs between raw recovery, portable archives, and transient draft controls.
+
 ## Confirmed Understanding
 
 - Improve expense-entry speed, spending visibility and budget control, and mistake prevention and recovery.
@@ -54,7 +56,7 @@ Quick Entry starts with a participant directory linking to each labeled draft bl
 - Give each participant a labeled draft block to reduce collisions. Edits to the same block by multiple people remain a shared-cell risk; do not imply identity-based isolation.
 - Prevent retry or double-tap duplication using a submission identifier and serialized commit. A successful status must correspond to a verified stored expense.
 - Bind each submission identifier to the original trip ID and immutable submitted values. Store it with the committed expense so a retry can find an existing commit even if the separate status update failed. Reject stale drafts after a trip switch; do not silently retarget them. Reusing an identifier with different values is an error.
-- A pending or failed submission remains visible. Clear draft fields only after success and only if they still match the submitted draft, so later edits are not erased.
+- A pending or failed submission remains visible. After success, clear the amount only if draft values still match the submitted draft; retain reusable fields and avoid erasing later edits.
 - Keep expense-commit status separate from recovery status. If the expense commits but a checkpoint fails, show Expense saved with its reference and Recovery checkpoint failed; do not resubmit this expense. Retrying recovery must not append an expense. Show last successful recovery time separately.
 
 ### Budgets and Dashboard
@@ -85,8 +87,8 @@ Quick Entry starts with a participant directory linking to each labeled draft bl
 - Validate a selected version before replacing inputs. Preview identity, timestamp, roster size, expense count, and budgets before explicit restoration.
 - Recalculate derived data after restoration. A failed replacement must show an error and retain the recoverable checkpoint; attempt rollback and report rollback failure explicitly.
 - Apply the 20-version retention limit only after a replacement/version write is verified. Do not delete the rollback source while an operation is in progress.
-- Recovery payloads include raw expense inputs, IDs, setup/roster/timezone, budgets, categories, templates, and duplicate acknowledgements. They do not restore historical email delivery or claim to revoke messages already sent.
-- Raw recovery capture must not call strict calculation/import validation. Preserve invalid setup values and incomplete expense rows in an internal recovery envelope, alongside the actual valid spreadsheet timezone and format metadata. Restore invalid versions as unconfirmed drafts with explicit errors; do not enable calculations or reports until corrected. Portable trip imports retain strict schema validation.
+- Recovery payloads include raw expense inputs, IDs, setup/roster/timezone, and the last valid budgets, categories, templates, and duplicate acknowledgements. They do not archive every invalid unsaved budget/template cell or transient Quick Entry field. They do not restore historical email delivery or claim to revoke messages already sent.
+- Raw recovery capture must not call strict calculation/import validation. Preserve invalid setup values and incomplete expense rows in an internal recovery envelope, alongside the actual valid spreadsheet timezone and format metadata. Restore invalid versions as unconfirmed drafts with explicit errors and keep reports gated until corrected. Valid expense portions may remain visible in labeled partial totals. Portable trip imports retain strict schema validation.
 - Replacements are organizer maintenance operations: pause entry, show maintenance status, serialize scripts, and temporarily restrict affected ranges before capture. Protect the restore confirmation control so other editors cannot initiate it through an owner-run trigger. If effective restrictions cannot be established, abort before replacement and preserve existing permissions.
 - Bind the preview/confirmation to immutable source trip ID, version ID, payload fingerprint, destination trip ID, and destination input fingerprint. Check all values again under the operation lock; any change invalidates the preview and requires a new one. Never read a newly selected version as the target of an earlier confirmation.
 - Sheet protections cannot block the owner or executing account. They must refrain from direct edits during replacement. Compare captured input fingerprints before writes and verify the complete intended result afterward; abort on observed conflicts. Do not claim atomic isolation from arbitrary owner edits. If later edits are detected, preserve both recovery payloads, mark recovery required, and do not blindly roll back over those edits. Restore original protections after a verified operation or a safe abort.
@@ -155,7 +157,7 @@ The following technical constraints were introduced during peer review: mandator
 | Make Android/iPhone cell-based workflows primary | Desktop-dependent panel controls | User explicitly required mobile friendliness and accepted the mobile workflow. |
 | Keep 20 versions with throttled automatic checkpoints and unconditional pre-replacement snapshots | Full edit-history retention | User accepted the stated recovery limits. |
 | Require regression, migration, concurrency, failure-path, and real-device checks | Syntax-only validation | User accepted verification requirements. |
-| Extend schema/layout and reuse the ledger | Separate dashboard calculations or destructive rebuild | Technical integration proposal; requires reviewer validation and implementation proof. |
+| Extend schema/layout and reuse the ledger | Separate dashboard calculations or destructive rebuild | Accepted in structured review and implemented locally; regression results are recorded in the implementation plan. Live release checks remain pending. |
 | Bind durable submission receipts to the original trip and values | Deduplicate using only transient status | Resolves S1: retries must reconcile a commit after interrupted status writes. |
 | Separate raw recovery envelopes from strict trip validation | Reuse strict import validation for every checkpoint | Resolves S3: invalid drafts must remain recoverable. |
 | Require cooperative organizer maintenance with recoverable protection changes | Rely on script locks alone | Resolves S2/C1/C2: detect observable conflicts, bind targets, and recover interrupted operations without asserting atomicity. User acknowledged the limit before coding. |

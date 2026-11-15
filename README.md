@@ -3,7 +3,7 @@
 # ✈️ Dynamic Group Travel Expense Splitter
 
 **A zero-dependency, open-source Splitwise alternative built directly inside Google Sheets.**
-Instant per-person split calculations, a live group summary panel, exact minimum-transfer settlements, and 1-click personalized PDF email reports.
+Per-person splits, exact minimum-transfer settlements, and personalized PDF email reports. An optional mobile workbook adds guided entry, budget charts, validation, and versioned recovery.
 
 [![Google Apps Script](https://img.shields.io/badge/Google%20Apps%20Script-4285F4?style=for-the-badge&logo=google&logoColor=white)](#quick-start)
 [![Google Sheets](https://img.shields.io/badge/Google%20Sheets-34A853?style=for-the-badge&logo=googlesheets&logoColor=white)](#quick-start)
@@ -25,7 +25,31 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 
 ---
 
+## Contents
+
+- [Key features](#features)
+- [Tech stack](#tech-stack)
+- [Prerequisites](#prerequisites)
+- [Screenshots](#screenshots)
+- [Quick start](#quick-start)
+- [Classic workbook tabs](#classic-workbook-tabs)
+- [Calculations, splits, currency, and settlements](#calculations)
+- [Desktop menu reference](#menu-reference)
+- [Mobile workbook upgrade](#mobile-workbook-upgrade)
+- [Local development with clasp](#local-development-with-clasp)
+- [Architecture](#architecture)
+- [Configuration and environment](#configuration-and-environment)
+- [PDF design](#participant-pdf-design)
+- [Testing](#testing)
+- [Deployment and release](#deployment-and-release)
+- [Troubleshooting](#troubleshooting)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [License](#license)
+
 The workflows and screenshots below describe the classic layout. The optional [mobile workbook upgrade](#mobile-workbook-upgrade) adds guided entry, budgets/charts, validation warnings, and versioned recovery without resetting existing trip inputs.
+
+<a id="features"></a>
 
 ## 🌟 Why Use This Over Splitwise?
 
@@ -39,8 +63,32 @@ The workflows and screenshots below describe the classic layout. The optional [m
 * **Dynamic Roster Scaling:** Scale your group seamlessly from 2 to 15 people — the grid, dropdowns, person columns, and summary panel auto-adjust on the fly.
 * **Mobile Editing & Confirmation:** Enter expenses and confirm setup through checkboxes in the Sheets app. Send PDF emails from the desktop menu or Apps Script editor.
 * **Reusable Trip Records:** Save complete trip inputs as JSON, download a portable file, reload past trips, and start a blank trip in the same spreadsheet.
+* **Optional Mobile Workbook:** Owner-enabled upgrade with participant entry blocks, reusable templates, expense copying, category/trip budgets, spending charts, duplicate checks, and the latest 20 recovery versions per trip. See [activation and verification status](#mobile-workbook-upgrade).
+
+## Tech Stack
+
+| Component | Implementation |
+| --- | --- |
+| Runtime | Google Apps Script V8; source in [Code.js](Code.js) |
+| Interface and storage | Bound Google Sheets workbook, cell controls, dropdowns, charts, Records, and optional recovery state |
+| Browser dialog | [TripJson.html](TripJson.html), served by Apps Script HtmlService for JSON import/download |
+| Money and settlements | Integer minor units; exact subset dynamic programming for up to 15 people; whole-unit payment output |
+| Historical exchange rates | Frankfurter v2 requests through UrlFetchApp, with document properties and CacheService |
+| PDF and email | Apps Script HtmlService conversion and MailApp |
+| Local verification | Node.js 22+ built-in test runner, VM, and built-in modules; no npm dependencies |
+| Upload tooling | Optional Google clasp CLI; optional Git pre-push synchronization |
+
+There is no local web server, package manifest, external database, container, or application build step. Uploads update a spreadsheet-bound Apps Script project; they do not deploy a standalone website.
+
+## Prerequisites
+
+For using the tracker, you need a Google account, edit access to your spreadsheet copy, and desktop Google Sheets for initial setup/authorization. Android or iPhone Sheets apps support the daily mobile workflow after setup. Scripted actions need connectivity; a pending draft is not a confirmed expense.
+
+For local development, install Node.js 22 or newer and Git. The full test suite also uses Git for Windows Bash at `C:\Program Files\Git\bin\bash.exe` on Windows, or `/bin/bash` elsewhere. Install clasp only if you will upload code. Local tests require no Google credentials or email access.
 
 ---
+
+<a id="screenshots"></a>
 
 ## 📸 Screenshots & Workflow
 
@@ -98,12 +146,14 @@ Use a Google account with permission to edit your own spreadsheet copy. Node.js 
 Saved **Records** survive initialization. Use **New Trip** for the next journey: it saves current inputs before clearing the active trip. After installing this update, reload the spreadsheet to add Records and the Save Trip checkbox without resetting existing inputs.
 
 ### Option A: 1-Click Google Sheet Template (Easiest)
+
 1. Click the **[Make a Copy Template Link](https://docs.google.com/spreadsheets/d/1RhpHiZl04dA-AfKIuFesJz137zO-eatgfG5TYGRXXJM/copy)**.
 2. Open the newly created spreadsheet in your Google Drive.
 3. Reload the spreadsheet to load the **Expense Splitter** menu, then select `1. Initialize / Reset Tracker` on the fresh copy.
 4. Authorize the script when prompted, then follow **Daily workflow** below. If the menu is missing, open **Extensions → Apps Script** and run `setup()` once.
 
 ### Option B: Manual Setup via Google Apps Script
+
 1. Create a blank **Google Sheet**.
 2. Navigate to **Extensions** → **Apps Script**.
 3. Replace all content in `Code.gs` with the code from [`Code.js`](Code.js).
@@ -112,7 +162,7 @@ Saved **Records** survive initialization. Use **New Trip** for the next journey:
 5. Save, select `setup` in the function dropdown, and click **Run** to initialize the blank sheet and authorize the script.
 6. Reload Google Sheets to load the **Expense Splitter** menu, then follow the workflow below.
 
-### Daily workflow
+### Daily workflow — classic workbook
 
 1. Fill in the trip name, participant count, base currency, timezone in **Setup!E4**, and unique participant names on **Setup**. Emails are optional. Use names without commas so subgroup selections remain unambiguous.
 2. Select **Expense Splitter → Confirm / Update Setup**, or tick `Setup!B6` / `Setup!B7` on mobile.
@@ -123,13 +173,16 @@ Saved **Records** survive initialization. Use **New Trip** for the next journey:
 5. To send statements, use **3. Send PDF Reports via Email** on desktop and grant email permission if requested. Review delivery status in **Send Reports**.
 6. Save the completed trip with **Save Trip** or the `Setup!E6` checkbox. Use **New Trip** to reuse this spreadsheet.
 
-Confirmation is a report-visibility gate, not an edit lock: expense edits continue to recalculate the plan. Changing setup details resets confirmation. After renaming or removing participants, update their names in existing **Paid By** and **Split Among** entries before reconfirming.
+Confirmation is a report-visibility gate, not an edit lock: classic expense edits continue to recalculate the plan. Changing setup details resets confirmation. In the upgraded workbook, expense edits also withdraw confirmation; incomplete rows and unacknowledged duplicates must be resolved before confirming again. After renaming or removing participants, update their names in existing **Paid By** and **Split Among** entries before reconfirming.
 
 ---
 
-## 🧭 The Four Tabs
+## Classic Workbook Tabs
+
+The classic workbook has four tabs. The optional upgrade retains them and adds Dashboard, Quick Entry, Budgets, History, and the internal _Tracker State sheet.
 
 ### 1️⃣ Setup
+
 Configure the trip and the group:
 
 | Cell | Setting | Default |
@@ -150,6 +203,7 @@ Configure the trip and the group:
 Choose **Setup!E4** on desktop or mobile. Suggestions cover common timezones; type another supported name such as `America/Argentina/Buenos_Aires` when needed. The selection updates the [spreadsheet timezone](https://developers.google.com/apps-script/reference/spreadsheet/spreadsheet#setSpreadsheetTimeZone(String)) for all collaborators. Existing expense calendar dates remain unchanged, including across daylight saving offsets. FX dates, report dates, and delivery timestamps follow the selected timezone. Invalid selections restore the previous setting. Changing timezone requires setup confirmation again. Initialization and New Trip keep the current spreadsheet timezone. Reloading an existing tracker adds this control without clearing inputs.
 
 ### 2️⃣ Expenses
+
 In the classic layout, enter expenses in columns **A–F**; everything else is computed live. The optional mobile upgrade below adds Category in G, a hidden ID in H, and starts participant outputs at I.
 
 | Column | Field | Type |
@@ -176,6 +230,7 @@ The live summary is in **Send Reports!H:K**. Expenses contains input columns A:F
 **Duo example:** if Person 2 pays a ₹1,000 hotel bill split between both, the summary shows **Spent ₹500** for each person. Person 1's net is **−₹500** and Person 2's net is **+₹500**. The generated expense-row columns show those signed nets, not the ₹500 shares.
 
 ### 3️⃣ Send Reports
+
 The live summary in **H:K** is always available and recalculates on expense edits. The report and settlement tables in **A:F** require `Setup!B6` (**Setup Confirmed?**) to be checked. Use **Confirm All Expenses** to refresh the report after reviewing expenses. It shows:
 
 * **Personal Balances Summary** — per-person Total Paid, Total Share, Net Balance, and email delivery status.
@@ -192,26 +247,31 @@ Each saved trip occupies one row. Columns A:E show the trip ID, name, UTC save t
 - **Delete:** select a saved trip row and choose **Delete Selected Trip**. Confirm to remove only that archive. Active inputs and downloaded files remain available; saving active inputs again creates a new archive if its record was deleted.
 - **New trip:** choose **New Trip** and confirm. Current inputs are saved first; trip name, participant names, expenses, and confirmation are cleared. The blank canvas starts with two participant slots and ₹ currency. Saved Records remain available.
 
-Snapshots include trip name, base currency, participant count, all 15 roster slots (including inactive names and emails), confirmation, and all 500 supported expense input rows in A:F. Draft entries, interior blank rows, all split modes, row currencies, and actual date values survive a round trip. Only trailing empty rows are omitted. Formulas are saved as their current values. JSON schema version 2 adds row currencies; version 1 files still load with blank inherited currencies. Derived output is recalculated on load; FX cache entries and email delivery statuses are not exported. Loading historical trips can therefore fetch rates again.
+Classic snapshots include trip name, base currency, participant count, all 15 roster slots (including inactive names and emails), confirmation, and all 500 supported expense input rows in A:F. Upgraded snapshots additionally include Category, Expense ID, and workbook configuration in schema version 3. Draft entries, interior blank rows, all split modes, row currencies, and actual date values survive a round trip. Only trailing empty rows are omitted. Formulas are saved as their current values. Version 1 files load with inherited currencies; version 2 includes row currencies. Derived output is recalculated on load; FX cache entries and email delivery statuses are not exported. Loading historical trips can therefore fetch rates again.
 
-Incomplete names and draft expenses can be saved. Participant count must still be 2–15. Invalid or unsupported JSON is rejected before replacing inputs. Loading requires the same spreadsheet timezone as the saved trip, preserving date instants and calendar display; select that timezone in **Setup!E4** before loading or importing. JSON contains participant emails and expense details, so share files with the same care as the spreadsheet.
+Incomplete names and draft expenses can be saved. Portable Records still require a participant count of 2–15. Invalid or unsupported JSON is rejected before replacing inputs. **Classic loading** requires the same spreadsheet timezone as the saved trip; select it in **Setup!E4** first. **Upgraded loading** applies the saved timezone during checkpointed replacement and returns unconfirmed inputs. A classic workbook must be upgraded before loading version 3 JSON. JSON contains participant emails and expense details, so share files with the same care as the spreadsheet.
+
+Deleting the active trip's Records row also clears its current trip ID. In an upgraded workbook, budgets, templates, and recovery history remain associated with the former ID; a newly allocated ID uses default configuration. Keep a JSON export or use **History!B3** to select the previous trip when those settings need to be restored. Deleting a Records row does not delete History versions.
 
 On mobile, `Setup!E6` saves to Records. File download/import and record-management menu actions use desktop Google Sheets. JSON files download through the browser; no Drive file or email is created.
 
 ---
+
+<a id="calculations"></a>
 
 ## ⚙️ How It Works
 
 ### Supported inputs & delivery
 
 - Supports **2–15 participants** and **500 expense rows**, starting at row 2. Rows after 501 are not included in calculations.
-- Enter positive amounts with up to two decimal places. Empty/incomplete rows and non-positive or non-numeric amounts are ignored; refunds and negative expenses are not supported.
+- Enter positive amounts with up to two decimal places. Classic calculations ignore empty/incomplete rows and non-positive or non-numeric amounts. Upgraded calculations retain nonempty invalid rows with warnings, label partial totals, and block confirmation. Completely blank rows remain unused. Refunds and negative expenses are not supported.
 - Names match without case sensitivity or surrounding spaces. Duplicate equal-split names count once. Unknown names and duplicate percentage entries produce row errors and block settlement and PDF sending.
 - All currencies currently use two decimal places for ledger units, including codes whose standard minor-unit precision differs. Use ISO codes for ambiguous symbols; `$` means USD.
 - Sending reports is manual. Missing or invalid email addresses are skipped. Running the send action again sends another email to every valid address, including participants already marked **Sent**.
 - PDF conversion and email sending use your Google account's [Apps Script quotas](https://developers.google.com/apps-script/guides/services/quotas).
 
 <a id="three-split-modes"></a>
+
 ### Three Split Modes
 
 All three modes use **Expenses!E**, with no separate split columns:
@@ -255,6 +315,7 @@ The **Explanation** column beside each payment uses this template: “[Person A]
 The exact solver uses `O(n × 2^n)` time and `O(2^n)` memory, with at most 32,768 subsets for 15 people. It blocks invalid balances, unsafe integer totals, and groups above the supported limit. It never substitutes an approximate plan. See the [design and decision log](docs/plans/optimal-settlements.md).
 
 ### Performance Design
+
 * Expense inputs are read as a range and calculated in memory; participant results and summary rows are written in batches.
 * Structural rebuilds (headers, dropdowns, validations) happen **only** on Setup/roster changes, never while typing expenses.
 * Send Reports refreshes on expense edits and setup changes. The live summary remains visible while settlement output is unconfirmed.
@@ -262,17 +323,22 @@ The exact solver uses `O(n × 2^n)` time and `O(2^n)` memory, with at most 32,76
 
 ---
 
+<a id="menu-reference"></a>
+
 ## 🧰 Menu Reference (Desktop)
 
 | Menu Item | Action |
 |-----------|--------|
-| `1. Initialize / Reset Tracker` | Clears and rebuilds the three active tracker sheets; preserves Records |
+| `Upgrade / Repair Mobile Workbook` | Owner-only, checkpointed upgrade; retains classic inputs/Records and installs automation; repairs an existing upgraded layout |
+| `Repair Workbook Automation` | Owner installs/repairs the authorized dispatcher and reconciles pending mobile requests |
+| `Recover Interrupted Workbook Operation` | Owner rolls back unverified replacement or finishes verified-operation cleanup while preserving original protections |
+| `1. Initialize / Reset Tracker` | Classic: clears/rebuilds active tracker sheets and preserves Records. Upgraded: uses the checkpointed New Trip flow |
 | `2. Recalculate Live Expenses` | Recalculates expense nets and Send Reports live summary; settlement output requires confirmation |
-| `Enable Automatic Currency Conversion` | Authorizes and installs an edit trigger for historical FX lookups; refreshes the ledger |
-| `Confirm / Update Setup` | Validates the roster, rebuilds generated columns, and confirms setup |
-| `Confirm All Expenses` | Publishes balances + settlement plan (assignable to a drawing button) |
+| `Enable Automatic Currency Conversion` | Classic: installs the FX trigger. Upgraded: repairs the owner-run workbook automation |
+| `Confirm / Update Setup` | Classic: validates/rebuilds the roster and confirms setup. Upgraded: also checks expense errors and duplicate acknowledgement |
+| `Confirm All Expenses` | Validates and publishes balances/settlements; upgraded incomplete rows and unacknowledged duplicates block confirmation |
 | `Re-open for Editing (Unconfirm)` | Withdraws the report view |
-| `Save Trip` | Saves or updates the current trip's complete JSON snapshot in Records |
+| `Save Trip` | Saves/updates Records; upgraded workbooks first create a recovery version |
 | `Load Selected Trip` | Saves current inputs, then loads the selected Records row |
 | `Download Selected Trip JSON` | Opens a download link for the selected saved trip |
 | `Import Trip JSON` | Saves current inputs, then loads and archives an exported JSON file with a new ID |
@@ -333,6 +399,19 @@ See the [approved design](docs/plans/mobile-expense-workbook.md), [implementatio
 
 Use Node.js 22+ and the [Google clasp CLI](https://github.com/google/clasp). There is no package manifest, build step, or local server.
 
+Commands use the current canonical clasp names, including `show-file-status` and `open-script`. Check `clasp --version` and `clasp --help` when using a different installed release.
+
+Clone and check the source before connecting Google credentials:
+
+```sh
+git clone https://github.com/Yash19815/dynamic-travel-expense-splitter.git travel-expense-excel
+cd travel-expense-excel
+node --check Code.js
+node --test
+```
+
+To upload, install clasp separately:
+
 ```sh
 npm install -g @google/clasp
 clasp login
@@ -345,12 +424,12 @@ Run these commands from the repository root:
 ```sh
 node --check Code.js
 node --test
-clasp status
+clasp show-file-status
 clasp push
 clasp open-script
 ```
 
-The first commands check syntax and run local tests. `clasp status` lists upload files; `clasp push` uploads to the configured project; `clasp open-script` opens its editor. The upload should contain `Code.js`, `TripJson.html`, and `appsscript.json`; `.claspignore` excludes tests and preview artifacts. Clasp authentication authorizes uploads; spreadsheet and email permissions are granted separately when running the script.
+The first commands check syntax and run local tests. `clasp show-file-status` lists upload files; `clasp push` uploads to the configured project; `clasp open-script` opens its editor. The upload should contain `Code.js`, `TripJson.html`, and `appsscript.json`; `.claspignore` excludes tests and preview artifacts. Clasp authentication authorizes uploads; spreadsheet and email permissions are granted separately when running the script.
 
 Run `setup()` only when initializing a blank development spreadsheet. For subsequent code updates, reload the sheet and use **2. Recalculate Live Expenses** or **Confirm All Expenses** as needed. For automatic foreign conversion, select **Enable Automatic Currency Conversion** once and authorize the edit trigger and external requests. Edit-trigger behavior, actual PDF conversion, and email delivery require checks in Google Sheets.
 
@@ -359,6 +438,8 @@ For push automation, use [`scripts/pre-push`](scripts/pre-push) and the [Git Bas
 Automatic hook uploads run `clasp push --force` for both projects. Each checkout's local `appsscript.json` replaces its remote manifest without a confirmation prompt, including runtime, timezone, and explicitly configured permissions. Upload failures and unexpected skipped uploads still block the Git push.
 
 ---
+
+<a id="architecture"></a>
 
 ## 📂 Project Architecture
 
@@ -372,9 +453,17 @@ travel-expense-excel/
 ├── AGENTS.md                 # Contributor guidelines
 ├── README.md                 # Project documentation
 ├── assets/                   # Setup, expenses, settlements, and PDF screenshots
-├── docs/plans/               # Settlement/mobile designs, decision logs, and implementation plan
+├── docs/
+│   ├── architecture.md       # Runtime, functions, data formats, and state reference
+│   ├── pre-push-setup.md     # Optional two-project upload hook installation and recovery
+│   ├── marketing.md          # Draft launch plan and release-readiness boundaries
+│   └── plans/                # Settlement/mobile designs, decision logs, and implementation plan
+├── scripts/pre-push          # Copies Code.js and uploads template, then main project
 └── tests/
     ├── calculations.test.cjs # Money, ledger, and sheet output tests
+    ├── roster-updates.test.cjs # Roster growth/shrink and confirmation controls
+    ├── splits-fx.test.cjs    # Exact/percentage splits, dated rates, cache and trigger behavior
+    ├── pre-push.test.cjs     # Isolated synchronization/upload-hook tests
     ├── optimal-settlements.test.cjs # Exact minima, explanations, and benchmarks
     ├── settlements.test.cjs  # Settlement validity and minimum-count checks
     ├── pdf-report.test.cjs   # Personal statement content and privacy checks
@@ -386,6 +475,27 @@ travel-expense-excel/
     ├── helpers/              # Spreadsheet boundary mocks and exact test oracle
     └── README.md             # Test scope and known limitations
 ```
+
+Classic edits run through `onEdit(e)` unless the authorized FX dispatcher is installed. Upgraded workbooks use the owner's `onAuthorizedEdit(e)` route. Both feed the same ledger and settlement engine; mobile submissions add durable receipts, and replacement operations add checkpoints, input verification, and maintenance recovery. PDF email remains an explicit action.
+
+The workbook is the persistent store. Records holds the latest portable trip archive; History indexes recovery versions in _Tracker State. Document properties hold trigger/maintenance metadata and cached FX rates. There are no HTTP routes, database migrations, or public REST endpoints; `TripJson.html` calls the bound `importTripJson(json)` function through `google.script.run`.
+
+See [architecture and entry-point reference](docs/architecture.md) for the data flow, schema versions, state keys, limits, and known diagnostic behavior.
+
+## Configuration and Environment
+
+Everyday settings live in **Setup**, **Budgets**, and the template table in **Quick Entry**. There is no application `.env` file or required runtime environment variable.
+
+| File or setting | Purpose | Required when |
+| --- | --- | --- |
+| `appsscript.json` | V8 runtime, exception logging, neutral `Etc/UTC` script timezone; trip timezone comes from Setup/E4 | Uploading or manually installing the bound project |
+| `.clasp.json` | Destination Apps Script `scriptId` and optional local source-root configuration | Using clasp; point it at your own development copy |
+| `.claspignore` | Excludes tests, scripts, and node_modules from Apps Script uploads | Using clasp |
+| `ROAMTAB_TEMPLATE_REPO` | Absolute path to a separate template checkout; overrides the Git setting below | Optional installed pre-push hook |
+| `git config --local roamtab.templateRepo` | Clone-local fallback for the template checkout path | Optional hook when the environment variable is absent |
+| Google authorization | Spreadsheet, trigger, external-request, and email capabilities inferred from the script's service use | Running corresponding Google actions; clasp login alone does not authorize them |
+
+Application-managed document properties such as `WORKBOOK_OPERATION_PHASE`, `WORKBOOK_ORGANIZER`, and `FX_*` are not user configuration. Do not edit them to bypass a failed operation. Use the recovery/repair controls instead. Clasp credentials belong in clasp's account storage, not in this repository.
 
 ---
 
@@ -407,6 +517,8 @@ Open the files in `tests/previews/` and print to PDF using A4 paper with browser
 
 ---
 
+<a id="testing"></a>
+
 ## Automated Calculation Tests
 
 Use Node.js 22 or newer. No npm dependencies or Google credentials are needed:
@@ -423,7 +535,27 @@ Trip archive tests cover 15 participants and all 500 expenses across JSON parts,
 
 Split/FX tests cover exact and percentage validation, deterministic remainders, half-cent conversion, 500 foreign rows with 2 and 15 participants, cache eviction and 24-hour expiry, API failures, timezone dates, column migration, schema versions 1/2, and authorized versus simple edits. Fetch responses and Google service boundaries are mocked. In a disposable spreadsheet, enable the FX trigger, enter a dated USD expense against INR, and verify live nets, cached recalculation, errors before confirmation, and saved-trip restoration. Capture updated sheet screenshots after that live check.
 
+The local verification recorded on **2026-11-15** passed **288 tests**, including **35 mobile-workbook tests**. These cover version 3 migration, budgets, duplicate acknowledgement, deliberate identical submissions versus retries, contended execution contexts, long Unicode snapshots, and interrupted maintenance. This is local regression evidence, not verification of a published template or native Android/iPhone behavior. See the [verification record](docs/plans/mobile-expense-implementation.md#verification--2026-11-15) and [live release checks](tests/README.md#mobile-workbook-tests-and-release-checks).
+
+## Deployment and Release
+
+The deployment target is a spreadsheet-bound Apps Script project. Updating source code, upgrading a workbook's data/layout, and authorizing its triggers are separate operations.
+
+1. Run `node --check Code.js` and `node --test` locally. Inspect `.clasp.json` so it targets a disposable development copy. Review `appsscript.json` and the upload list with `clasp show-file-status`.
+2. Upload `Code.js`, `TripJson.html`, and `appsscript.json` with `clasp push`, or copy them manually through Apps Script. This updates script source; it does not initialize a sheet, migrate inputs, or install an authorized trigger.
+3. Reload the development spreadsheet. Keep an existing tracker in classic mode to check compatibility, or, as its owner, pause all editing and choose **Upgrade / Repair Mobile Workbook**. Use `setup()` only to initialize a blank tracker.
+4. Complete the [live release checks](tests/README.md#mobile-workbook-tests-and-release-checks): desktop permissions, two-account editing, native Android/iPhone controls, timezone/FX behavior, restore/failure paths, and controlled PDF delivery. Capture new screenshots only after those checks pass.
+5. Before a production upgrade, retain a spreadsheet copy and a current JSON export where valid. Capture invalid inputs through recovery rather than discarding them to satisfy portable-export validation. Review the target and coordinate the maintenance pause with collaborators.
+6. Repeat the reviewed upload/upgrade against the intended production copy. Source upload alone does not establish that the public copy-template link contains this code or that any workbook has been upgraded.
+7. If using the optional pre-push hook, review [both-project synchronization](docs/pre-push-setup.md) first. It uploads the template project before the main project, including uncommitted working-tree files. It does not run tests or initialize/upgrade either workbook.
+
+For an interrupted data replacement, use **Recover Interrupted Workbook Operation** or **History!B10**. For a verified historical input restore, use the preview/confirmation controls in History. Restoring input history does not downgrade the workbook schema. If a code release must be reverted, use the saved spreadsheet copy or restore a compatible runtime revision together with its matching layout; uploading classic-only code onto a version 3 layout can overwrite category/ID columns as generated output. Email delivery cannot be undone by restoring inputs.
+
+No production upload, native-app signoff, or live email verification is implied by the current local test result.
+
 ---
+
+<a id="troubleshooting"></a>
 
 ## 🔧 Troubleshooting
 
@@ -438,8 +570,29 @@ Split/FX tests cover exact and percentage validation, deterministic remainders, 
 | Formatting or generated columns look wrong | Use **Confirm / Update Setup**, then **2. Recalculate Live Expenses** |
 | Quota or authorization error | Read the Apps Script execution error, check account quotas, and authorize the required service |
 | Something feels off | Run **Diagnose Settlement Data** and read the reported ledger errors |
+| Add expense stays Pending | Wait for its own acknowledgement. The owner can use **Repair Workbook Automation**; **Dashboard!B15** reconciles pending requests after the trigger works again |
+| Submission outcome is uncertain | Preserve the draft. Owner inspects **History!B38:B40** and explicitly cancels through **B41** if needed; cancellation never adds/deletes an expense |
+| Expense saved but recovery checkpoint failed | Do not resubmit the expense. Read Dashboard recovery status and retry the checkpoint/processing after resolving quota or capacity |
+| Draft belongs to another trip | Review the destination and use that block's **Reset draft** checkbox. Resolve any uncertain prior request first |
+| Final confirmation rejects a duplicate | Review **Expenses!X:Y** and acknowledge each legitimate repeat; no expense is deleted automatically |
+| Budget comparisons unavailable | Review amounts after a base-currency change, then check **Budgets!B5**; editing the displayed currency alone does not confirm them |
+| Interrupted operation blocks edits/recalculation | Owner pauses editing and uses **History!B10** or the recovery menu; do not clear the internal phase property manually |
+| Diagnose lists G-based participant columns after upgrade | That diagnostic text still describes classic columns. Upgraded participant output starts at I; use the actual headers and ledger checks |
 
 ---
+
+## Documentation
+
+| Guide | Use it for |
+| --- | --- |
+| [Architecture and function reference](docs/architecture.md) | Runtime boundaries, entry points, schema/storage formats, state keys, and calculation invariants |
+| [Test scope and live release checks](tests/README.md) | Local commands, mocked boundaries, and device/Google-service verification |
+| [Pre-push upload runbook](docs/pre-push-setup.md) | Optional hook installation, two-project copying/uploading, and partial-upload recovery |
+| [Mobile workbook design](docs/plans/mobile-expense-workbook.md) | Approved requirements, operating limits, and peer-review decision log |
+| [Mobile implementation and verification](docs/plans/mobile-expense-implementation.md) | Implementation choices, recorded local test results, and remaining release gates |
+| [Settlement design](docs/plans/optimal-settlements.md) | Exact minimum-transfer algorithm and explanation rationale |
+| [Marketing plan](docs/marketing.md) | Draft positioning and launch prerequisites; not a release announcement |
+| [Contributor instructions](AGENTS.md) | Repository conventions, validation, and documentation expectations |
 
 <a id="contributing"></a>
 
@@ -456,6 +609,8 @@ Contributions are welcome! Please feel free to open an issue or submit a pull re
 Include a short behavior summary and validation results. Add screenshots when changing sheet layouts or PDF output; verify financial changes with `node --test`.
 
 ---
+
+<a id="license"></a>
 
 ## 📜 License
 
