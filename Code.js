@@ -31,7 +31,7 @@ const SHEET_SETUP = 'Setup';
 const SHEET_EXPENSES = 'Expenses';
 const SHEET_REPORTS = 'Send Reports';
 const SHEET_RECORDS = 'Records';
-const TRIP_SCHEMA_VERSION = 2;
+const TRIP_SCHEMA_VERSION = 3;
 const TRIP_JSON_CHUNK_SIZE = 40000;
 
 const COL = {
@@ -92,6 +92,10 @@ const COLOR = {
    ========================================================= */
 
 function safeAlert(message) {
+  if (workbookQuiet_) {
+    workbookStatus_('Processing', String(message));
+    return;
+  }
   try {
     SpreadsheetApp.getUi().alert(message);
   } catch (err) {
@@ -106,9 +110,12 @@ function safeAlert(message) {
 
 function onOpen() {
   // Add archive controls to existing trackers without resetting their inputs.
-  ensureTripControls_();
+  if (!workbookPendingOperation_()) ensureTripControls_();
   SpreadsheetApp.getUi()
     .createMenu('Expense Splitter')
+    .addItem('Upgrade / Repair Mobile Workbook', 'upgradeMobileWorkbook')
+    .addItem('Repair Workbook Automation', 'installWorkbookAutomation')
+    .addItem('Recover Interrupted Workbook Operation', 'recoverWorkbookOperation')
     .addItem('1. Initialize / Reset Tracker', 'setup')
     .addItem('2. Recalculate Live Expenses', 'recalculateAll')
     .addItem('Enable Automatic Currency Conversion', 'enableAutomaticFx')
@@ -140,6 +147,8 @@ function onOpen() {
  * Clears Setup, Expenses, and Send Reports sheets and rebuilds all initial UI.
  */
 function setup() {
+  if (workbookPendingOperation_()) throw new Error('Recover the interrupted workbook operation before resetting.');
+  if (workbookV3_()) return newTripV3_();
   initializeTracker_(false);
 }
 
@@ -256,7 +265,7 @@ function ensureTripControls_() {
     sheet.getRange('D3').setValue('Current Trip ID');
     sheet.getRange('D4').setValue('Timezone').setFontWeight('bold');
     const timeZoneCell = sheet.getRange(SETUP_TIMEZONE_CELL);
-    timeZoneCell.setValue(ss.getSpreadsheetTimeZone()).setDataValidation(
+    timeZoneCell.setValue(workbookV3_() ? timeZoneCell.getValue() : ss.getSpreadsheetTimeZone()).setDataValidation(
       SpreadsheetApp.newDataValidation().requireValueInList([
         'Etc/UTC', 'Pacific/Honolulu', 'America/Anchorage', 'America/Los_Angeles',
         'America/Denver', 'America/Chicago', 'America/New_York', 'America/Toronto',
@@ -274,7 +283,8 @@ function ensureTripControls_() {
       'Existing expense calendar dates are preserved. Saved trips retain their own timezone.'
     );
     sheet.getRange('D6').setValue('Save Trip').setFontWeight('bold');
-    sheet.getRange(SETUP_SAVE_CELL).insertCheckboxes().setValue(false).setNote(
+    const pendingSave = workbookV3_() && sheet.getRange(SETUP_SAVE_CELL).getValue() === true;
+    sheet.getRange(SETUP_SAVE_CELL).insertCheckboxes().setValue(pendingSave).setNote(
       'Tick to save all trip inputs as JSON in Records. Resets after saving. ' +
       'Select a Records row and use the menu to load, download, or delete it.'
     );
@@ -332,8 +342,10 @@ function ensureRecordsSheet_() {
 }
 
 function withTripLock_(action) {
+  if (workbookLockDepth_ > 0) return action();
   const lock = LockService.getDocumentLock();
   lock.waitLock(10000);
+  workbookLockDepth_++;
   try {
     return action();
   } finally {
@@ -341,7 +353,11 @@ function withTripLock_(action) {
     try {
       SpreadsheetApp.flush();
     } finally {
-      lock.releaseLock();
+      try {
+        lock.releaseLock();
+      } finally {
+        workbookLockDepth_--;
+      }
     }
   }
 }
@@ -375,19 +391,22 @@ function literalSheetCell_(value) {
 }
 
 function captureTrip_() {
+  if (workbookPendingOperation_() && !workbookMaintenance_) throw new Error('Recover the interrupted operation before archiving.');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_SETUP);
   const expenses = ss.getSheetByName(SHEET_EXPENSES);
   if (!sheet || !expenses) throw new Error('Initialize the tracker first.');
   ensureExpenseLayout_();
-  const inputRows = expenses.getRange(2, 1, MAX_DATA_ROWS, COL.CURRENCY).getValues();
+  const advanced = workbookV3_();
+  if (advanced) repairExpenseIds_();
+  const inputRows = expenses.getRange(2, 1, MAX_DATA_ROWS, advanced ? 8 : COL.CURRENCY).getValues();
   // Keep interior blank rows and incomplete entries; omit only trailing empty rows.
   while (inputRows.length && inputRows[inputRows.length - 1].every(value => value === '')) {
     inputRows.pop();
   }
   const trip = {
     format: 'travel-expense-trip',
-    schemaVersion: TRIP_SCHEMA_VERSION,
+    schemaVersion: advanced ? TRIP_SCHEMA_VERSION : 2,
     id: String(sheet.getRange(SETUP_TRIP_ID_CELL).getValue() || Utilities.getUuid()),
     savedAt: new Date().toISOString(),
     timeZone: ss.getSpreadsheetTimeZone(),
@@ -401,12 +420,13 @@ function captureTrip_() {
     },
     expenses: inputRows.map(row => row.map(encodeTripCell_))
   };
+  if (advanced) trip.workbook = readWorkbookConfig_();
   validateTrip_(trip);
   return trip;
 }
 
 function validateTrip_(trip) {
-  if (!trip || trip.format !== 'travel-expense-trip' || ![1, TRIP_SCHEMA_VERSION].includes(trip.schemaVersion)) {
+  if (!trip || trip.format !== 'travel-expense-trip' || ![1, 2, TRIP_SCHEMA_VERSION].includes(trip.schemaVersion)) {
     throw new Error('Unsupported trip JSON format or version.');
   }
   if (typeof trip.id !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(trip.id) ||
@@ -428,9 +448,10 @@ function validateTrip_(trip) {
   const validRows = (rows, width, maximum) => Array.isArray(rows) && rows.length <= maximum &&
     rows.every(row => Array.isArray(row) && row.length === width && row.every(validCell));
   if (!validRows(settings.roster, 3, MAX_PARTICIPANTS) || settings.roster.length !== MAX_PARTICIPANTS ||
-      !validRows(trip.expenses, trip.schemaVersion === 1 ? COL.SPLIT : COL.CURRENCY, MAX_DATA_ROWS)) {
+      !validRows(trip.expenses, trip.schemaVersion === 3 ? 8 : trip.schemaVersion === 1 ? COL.SPLIT : COL.CURRENCY, MAX_DATA_ROWS)) {
     throw new Error('Invalid roster or expenses; JSON supports 15 roster rows and 500 expense rows.');
   }
+  if (trip.schemaVersion === 3) validateWorkbookTrip_(trip);
   return trip;
 }
 
@@ -469,6 +490,7 @@ function saveTripSnapshot_(trip) {
 
 function saveTrip() {
   return tripAction_(() => {
+    if (workbookV3_()) createRecoveryVersion_('Manual save');
     const trip = saveTripSnapshot_(captureTrip_());
     return `Trip saved in Records: ${trip.setup.tripName || '(Untitled trip)'}.\n` +
       'All expense inputs are included. Select its Records row to load or download JSON.';
@@ -512,6 +534,8 @@ function archiveCurrentTrip_() {
 
 function restoreTrip_(trip) {
   validateTrip_(trip);
+  if (workbookV3_()) return restorePortableV3_(trip);
+  if (trip.schemaVersion === 3) throw new Error('Upgrade Mobile Workbook before loading a version 3 trip.');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   if (trip.timeZone !== ss.getSpreadsheetTimeZone()) {
     throw new Error('Trip timezone differs from this spreadsheet. Match spreadsheet timezone before loading to preserve dates.');
@@ -547,6 +571,7 @@ function loadSelectedTrip() {
 }
 
 function newTrip() {
+  if (workbookV3_()) return newTripV3_();
   const ui = SpreadsheetApp.getUi();
   if (ui.alert('New Trip', 'Save current inputs in Records and start a blank trip?', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
   return tripAction_(() => {
@@ -632,6 +657,8 @@ function importTripJson(json) {
  * because programmatically changing a cell does not fire onEdit reliably.
  */
 function confirmSetupFromMenu() {
+  if (workbookPendingOperation_()) throw new Error('Recover the interrupted operation before confirming.');
+  if (workbookV3_()) return confirmWorkbookV3_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const setupSheet = ss.getSheetByName(SHEET_SETUP);
 
@@ -674,9 +701,9 @@ function confirmSetupFromMenu() {
     updateExpensesStructure();
     recalculateAll(true);
 
-    const participantStart = colNumToLetter_(FIRST_PERSON_COL);
+    const participantStart = colNumToLetter_(expenseFirstPersonCol_());
     const participantEnd = colNumToLetter_(
-      FIRST_PERSON_COL + personCount - 1
+      expenseFirstPersonCol_() + personCount - 1
     );
 
     safeAlert(
@@ -923,6 +950,16 @@ function validateSetupStatus() {
     return false;
   }
 
+  if (workbookV3_() && workbookCurrency_() === 'INVALID') {
+    statusCell.setValue('Invalid base currency: choose an ISO code or supported symbol.');
+    return false;
+  }
+  if (workbookV3_() && String(setupSheet.getRange(SETUP_TIMEZONE_CELL).getValue()) !==
+      SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone()) {
+    statusCell.setValue('Choose a valid timezone in E4; recovered invalid settings remain unconfirmed.');
+    return false;
+  }
+
   if (!Number.isInteger(peopleCount) ||
       peopleCount < MIN_PARTICIPANTS ||
       peopleCount > MAX_PARTICIPANTS) {
@@ -1095,6 +1132,8 @@ function adjustRosterRows() {
 
 function onEdit(e) {
   if (!e || !e.range) return;
+  if (workbookPendingOperation_()) return;
+  if (workbookV3_()) return; // Upgraded workbooks use one organizer-owned dispatcher.
   const limited = e.authMode === ScriptApp.AuthMode.LIMITED;
   if (limited && PropertiesService.getDocumentProperties().getProperty('AUTOMATIC_FX_EDIT') ===
       SpreadsheetApp.getActiveSpreadsheet().getId()) return;
@@ -1108,6 +1147,7 @@ function onEdit(e) {
 }
 
 function enableAutomaticFx() {
+  if (workbookV3_()) return installWorkbookAutomation();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const exists = ScriptApp.getProjectTriggers().some(trigger =>
     trigger.getHandlerFunction() === 'onAuthorizedEdit' && trigger.getTriggerSourceId() === ss.getId());
@@ -1120,6 +1160,7 @@ function enableAutomaticFx() {
 
 function onAuthorizedEdit(e) {
   if (!e || !e.range) return;
+  if (workbookV3_() || workbookPendingOperation_()) return handleWorkbookEdit_(e);
   // Confirmation and archive actions already acquire their own document lock.
   if (e.range.getSheet().getName() === SHEET_SETUP &&
       [SETUP_CONFIRM_CELL, SETUP_UPDATE_CELL, SETUP_SAVE_CELL].includes(e.range.getA1Notation())) {
@@ -1283,6 +1324,7 @@ function ensureExpenseLayout_() {
  * - Existing expense data remains untouched.
  */
 function updateExpensesStructure() {
+  if (workbookV3_()) return updateWorkbookExpenseLayout_();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_EXPENSES);
   const setupSheet = ss.getSheetByName(SHEET_SETUP);
@@ -1678,7 +1720,7 @@ function buildLedger_() {
   const fxState = { results: new Map() };
 
   const data = sheet
-    .getRange(2, 1, lastRow - 1, COL.CURRENCY)
+    .getRange(2, 1, lastRow - 1, workbookV3_() ? 7 : COL.CURRENCY)
     .getValues();
 
   data.forEach((row, index) => {
@@ -1702,6 +1744,7 @@ function buildLedger_() {
      * A partly entered row is ignored during live calculations.
      */
     if (!sourceAmountMinor || !payerText) {
+      if (workbookV3_()) errors.push(`Row ${rowNumber}: enter a positive amount and a payer, or clear the draft.`);
       rowRecords.set(rowNumber, null);
       return;
     }
@@ -1825,7 +1868,7 @@ function buildLedger_() {
     );
   }
 
-  return {
+  const ledger = {
     roster,
     peopleById,
     balances,
@@ -1836,6 +1879,7 @@ function buildLedger_() {
     expenses,
     totalMinor
   };
+  return workbookV3_() ? decorateWorkbookLedger_(ledger, data) : ledger;
 }
 
 /* =========================================================
@@ -1843,13 +1887,18 @@ function buildLedger_() {
    ========================================================= */
 
 function recalculateAll(forceReports) {
+  if (workbookPendingOperation_() && !workbookMaintenance_) throw new Error('Recover the interrupted operation before recalculating.');
+  if (workbookV3_() && workbookLockDepth_ === 0) return withTripLock_(() => recalculateAll(forceReports));
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_EXPENSES);
 
   if (!sheet) return;
 
+  if (workbookV3_()) repairExpenseIds_();
+
   const ledger = buildLedger_();
   const roster = ledger.roster;
+  if (workbookV3_()) refreshWorkbookViews_(ledger);
 
   if (!roster.length) {
     updateSendReportsSheet(ledger);
@@ -1859,7 +1908,7 @@ function recalculateAll(forceReports) {
   const rosterCount = roster.length;
   const format = getCurrencyFormat_();
 
-  const requiredColumns = FIRST_PERSON_COL + rosterCount - 1;
+  const requiredColumns = expenseFirstPersonCol_() + rosterCount - 1;
 
   if (sheet.getMaxColumns() < requiredColumns) {
     sheet.insertColumnsAfter(
@@ -1900,7 +1949,7 @@ function recalculateAll(forceReports) {
     sheet
       .getRange(
         2,
-        FIRST_PERSON_COL,
+        expenseFirstPersonCol_(),
         matrix.length,
         rosterCount
       )
@@ -2332,6 +2381,7 @@ function calculateGreedySettlements_(ledger) {
    ========================================================= */
 
 function confirmAllExpenses() {
+  if (workbookV3_()) return confirmWorkbookV3_();
   const setupSheet = SpreadsheetApp.getActiveSpreadsheet()
     .getSheetByName(SHEET_SETUP);
 
@@ -2420,11 +2470,11 @@ function updateSendReportsSheet(existingLedger) {
     return;
   }
 
-  if (ledger.errors.length) {
+  if (ledger.errors.length || (workbookV3_() && ledger.duplicateCount)) {
     sheet.getRange('A1:F1')
       .merge()
       .setValue(
-        `❌ Cannot create settlement plan: ${ledger.errors.join(' | ')}`
+        `❌ Cannot create settlement plan: ${ledger.errors.join(' | ')}${ledger.duplicateCount ? ' Acknowledge duplicate warnings in Expenses!Y.' : ''}`
       )
       .setBackground(COLOR.RED_BG)
       .setFontColor(COLOR.RED_TX)
@@ -2772,6 +2822,10 @@ function testEmailPermission() {
 }
 
 function sendPdfReports() {
+  if (workbookPendingOperation_()) {
+    safeAlert('Recover the interrupted workbook operation before sending reports.');
+    return;
+  }
   if (!validateSetupStatus()) {
     safeAlert('Cannot send reports: complete Setup first.');
     return;
@@ -2790,8 +2844,8 @@ function sendPdfReports() {
 
   const ledger = buildWholeUnitLedger_(buildLedger_());
 
-  if (ledger.errors.length) {
-    safeAlert(`Cannot send reports: ${ledger.errors.join(' | ')}`);
+  if (ledger.errors.length || (workbookV3_() && ledger.duplicateCount)) {
+    safeAlert(`Cannot send reports: ${ledger.errors.join(' | ')}${ledger.duplicateCount ? ' Acknowledge duplicate warnings in Expenses!Y.' : ''}`);
     return;
   }
 
@@ -2962,4 +3016,1352 @@ function diagnose() {
   }
 
   safeAlert(lines.join('\n'));
+}
+
+/* =========================================================
+   MOBILE WORKBOOK, VALIDATION, BUDGETS, AND RECOVERY
+   ========================================================= */
+
+// Mobile workbook additions remain in this file so both clasp projects receive the complete engine.
+const WORKBOOK_STATE_SHEET = '_Tracker State';
+const WORKBOOK_CATEGORIES = ['Food', 'Transport', 'Stay', 'Activities', 'Shopping', 'Other'];
+const QUICK_BLOCK_FIRST = 23;
+const QUICK_BLOCK_HEIGHT = 24;
+const TEMPLATE_FIRST_ROW = QUICK_BLOCK_FIRST + MAX_PARTICIPANTS * QUICK_BLOCK_HEIGHT + 3;
+const WORKBOOK_WARNING_COL = 24;
+let workbookLockDepth_ = 0;
+let workbookConfigCache_ = null;
+let workbookMaintenance_ = false;
+let workbookQuiet_ = false;
+let workbookLayoutCache_ = null;
+const WORKBOOK_STARTED_AT = Date.now();
+// Google Workspace announced the 20-million-cell limit in September 2026.
+const WORKBOOK_MAX_CELLS = 20000000;
+
+function workbookCurrency_(fallback = 'INVALID') {
+  try { return currencyCode_(getCurrencySymbol_()); } catch (error) { return fallback; }
+}
+
+function workbookPendingOperation_() {
+  const phase = PropertiesService.getDocumentProperties().getProperty('WORKBOOK_OPERATION_PHASE');
+  return !!phase && !['complete', 'aborted'].includes(phase);
+}
+
+function workbookV3_() {
+  if (workbookLayoutCache_ !== null) return workbookLayoutCache_;
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
+  workbookLayoutCache_ = !!sheet && sheet.getRange(1, 7).getValue() === 'Category' &&
+    sheet.getRange(1, 8).getValue() === 'Expense ID';
+  return workbookLayoutCache_;
+}
+
+function expenseFirstPersonCol_() {
+  return workbookV3_() ? 9 : FIRST_PERSON_COL;
+}
+
+function workbookTripId_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP);
+  let id = String(sheet.getRange(SETUP_TRIP_ID_CELL).getValue() || '');
+  if (!id) {
+    id = Utilities.getUuid();
+    sheet.getRange(SETUP_TRIP_ID_CELL).setValue(id);
+  }
+  if (!/^[a-zA-Z0-9-]{1,100}$/.test(id)) throw new Error('Invalid active trip identity.');
+  return id;
+}
+
+function workbookHash_(value) {
+  const serialized = typeof value === 'string' ? value : JSON.stringify(value, (key, item) =>
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.keys(item).sort().map(name => [name, item[name]])) : item);
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256,
+    serialized, Utilities.Charset.UTF_8)
+    .map(byte => (byte & 255).toString(16).padStart(2, '0')).join('');
+}
+
+function workbookSheet_(name) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+
+function workbookFit_(sheet, rows, columns) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const extraRows = Math.max(0, rows - sheet.getMaxRows());
+  const extraColumns = Math.max(0, columns - sheet.getMaxColumns());
+  const existing = ss.getSheets().reduce((sum, item) => sum + item.getMaxRows() * item.getMaxColumns(), 0);
+  const growth = (sheet.getMaxRows() + extraRows) * (sheet.getMaxColumns() + extraColumns) -
+    sheet.getMaxRows() * sheet.getMaxColumns();
+  if (existing + growth > WORKBOOK_MAX_CELLS || columns > 18278) {
+    throw new Error('Workbook capacity exceeded. Export/archive data before retrying.');
+  }
+  if (extraRows) sheet.insertRowsAfter(sheet.getMaxRows(), extraRows);
+  if (extraColumns) sheet.insertColumnsAfter(sheet.getMaxColumns(), extraColumns);
+}
+
+function workbookStateRows_(key) {
+  const sheet = workbookSheet_(WORKBOOK_STATE_SHEET);
+  const count = sheet.getLastRow();
+  if (!count) return [];
+  return sheet.getRange(1, 1, count, 2).getValues().flatMap((row, index) =>
+    row[0] === key && row[1] === 'COMMITTED' ? [index + 1] : []);
+}
+
+function workbookReadStateRow_(row) {
+  const sheet = workbookSheet_(WORKBOOK_STATE_SHEET);
+  const meta = sheet.getRange(row, 1, 1, 4).getValues()[0];
+  if (meta[1] !== 'COMMITTED' || !Number.isInteger(meta[3]) || meta[3] < 1 ||
+      meta[3] > sheet.getMaxColumns() - 4) throw new Error('Incomplete workbook state.');
+  const parts = sheet.getRange(row, 5, 1, meta[3]).getValues()[0];
+  if (parts.some(part => typeof part !== 'string' || !part.startsWith('JSON:'))) {
+    throw new Error('Damaged workbook state chunks.');
+  }
+  const json = parts.map(part => part.slice(5)).join('');
+  if (workbookHash_(json) !== meta[2]) throw new Error('Workbook state checksum mismatch.');
+  return JSON.parse(json);
+}
+
+function workbookGet_(key) {
+  const rows = workbookStateRows_(key);
+  return rows.length ? workbookReadStateRow_(rows[rows.length - 1]) : null;
+}
+
+function workbookPut_(key, value) {
+  if (Date.now() - WORKBOOK_STARTED_AT > 240000) throw new Error('Processing time budget exhausted. Retry or recover in a fresh execution.');
+  // Mark maintenance before journal writes; clear it only after a verified terminal journal.
+  if (key === 'operation') PropertiesService.getDocumentProperties().setProperty('WORKBOOK_OPERATION_PHASE',
+    ['complete', 'aborted'].includes(value.phase) ? 'cleanup' : value.phase);
+  const sheet = workbookSheet_(WORKBOOK_STATE_SHEET);
+  const json = JSON.stringify(value);
+  const parts = [];
+  for (let start = 0; start < json.length;) {
+    let end = Math.min(start + TRIP_JSON_CHUNK_SIZE, json.length);
+    if (end < json.length && /[\uD800-\uDBFF]/.test(json[end - 1])) end--;
+    parts.push(`JSON:${json.slice(start, end)}`);
+    start = end;
+  }
+  const oldRows = workbookStateRows_(key);
+  const row = sheet.getLastRow() + 1;
+  workbookFit_(sheet, row, parts.length + 4);
+  const hash = workbookHash_(json);
+  // A candidate never supersedes a committed value until every chunk has been read back.
+  sheet.getRange(row, 1, 1, parts.length + 4).setValues([[key, 'PREPARING', hash, parts.length, ...parts]]);
+  SpreadsheetApp.flush();
+  const saved = sheet.getRange(row, 5, 1, parts.length).getValues()[0].map(part => String(part).slice(5)).join('');
+  if (workbookHash_(saved) !== hash) throw new Error('Checkpoint write verification failed. Existing data remains available.');
+  sheet.getRange(row, 2).setValue('COMMITTED');
+  SpreadsheetApp.flush();
+  workbookReadStateRow_(row);
+  if (key === 'operation') PropertiesService.getDocumentProperties().setProperty('WORKBOOK_OPERATION_PHASE', value.phase);
+  oldRows.reverse().forEach(oldRow => sheet.deleteRow(oldRow));
+  return value;
+}
+
+function workbookDelete_(key) {
+  const sheet = workbookSheet_(WORKBOOK_STATE_SHEET);
+  workbookStateRows_(key).reverse().forEach(row => sheet.deleteRow(row));
+}
+
+function workbookConfigDefaults_() {
+  return {
+    categories: [...WORKBOOK_CATEGORIES], budgetCurrency: workbookCurrency_('INR'),
+    tripBudget: '', categoryBudgets: {}, acknowledgements: {},
+    templates: [
+      { name: 'Meal', description: 'Meal', category: 'Food', payer: '', split: 'All', currency: '' },
+      { name: 'Ride', description: 'Ride', category: 'Transport', payer: '', split: 'All', currency: '' },
+      { name: 'Hotel', description: 'Hotel', category: 'Stay', payer: '', split: 'All', currency: '' }
+    ]
+  };
+}
+
+function readWorkbookConfig_() {
+  if (workbookConfigCache_) return workbookConfigCache_;
+  workbookConfigCache_ = workbookGet_(`config:${workbookTripId_()}`) || workbookConfigDefaults_();
+  return workbookConfigCache_;
+}
+
+function saveWorkbookConfig_(config) {
+  validateWorkbookConfig_(config);
+  workbookPut_(`config:${workbookTripId_()}`, config);
+  workbookConfigCache_ = config;
+}
+
+function validateWorkbookConfig_(config) {
+  const text = value => typeof value === 'string' && value.length <= 50000;
+  const budget = value => value === '' || (typeof value === 'number' && Number.isFinite(value) &&
+    value >= 0 && Number.isSafeInteger(Math.round(value * 100)));
+  if (!config || !Array.isArray(config.categories) || config.categories.length > 100 ||
+      config.categories.some(value => !text(value) || !value.trim()) ||
+      new Set(config.categories.map(value => value.trim().toLowerCase())).size !== config.categories.length ||
+      !/^[A-Z]{3}$/.test(config.budgetCurrency) || !budget(config.tripBudget) ||
+      !config.categoryBudgets || typeof config.categoryBudgets !== 'object' || Array.isArray(config.categoryBudgets) ||
+      Object.values(config.categoryBudgets).some(value => !budget(value)) ||
+      !config.acknowledgements || typeof config.acknowledgements !== 'object' || Array.isArray(config.acknowledgements) ||
+      Object.entries(config.acknowledgements).some(([id, value]) => !/^[a-zA-Z0-9-]{1,100}$/.test(id) || !/^[a-f0-9]{64}$/.test(value)) ||
+      !Array.isArray(config.templates) || config.templates.length > 50 || config.templates.some(template =>
+        !template || !['name', 'description', 'category', 'payer', 'split', 'currency'].every(key => text(template[key])) || !template.name.trim()) ||
+      new Set(config.templates.map(template => template.name.toLowerCase())).size !== config.templates.length) {
+    throw new Error('Invalid workbook categories, budgets, templates, or acknowledgements.');
+  }
+  return config;
+}
+
+function validateWorkbookTrip_(trip) {
+  validateWorkbookConfig_(trip.workbook);
+  const ids = new Set();
+  trip.expenses.forEach(row => {
+    const active = row.slice(0, 7).some(value => value !== '');
+    if (active && (typeof row[7] !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(row[7]) || ids.has(row[7]))) {
+      throw new Error('Expense IDs must be valid and unique.');
+    }
+    if (active) ids.add(row[7]);
+    else if (row[7] !== '') throw new Error('Blank expenses cannot contain an ID.');
+  });
+}
+
+function repairExpenseIds_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
+  const rows = sheet.getRange(2, 1, MAX_DATA_ROWS, 8).getValues();
+  const counts = new Map();
+  rows.forEach(row => { if (row[7]) counts.set(row[7], (counts.get(row[7]) || 0) + 1); });
+  let changed = false;
+  const config = readWorkbookConfig_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const timezone = ss.getSpreadsheetTimeZone();
+  const baseCurrency = getCurrencySymbol_();
+  let changedConfig = false;
+  rows.forEach(row => {
+    const active = row.slice(0, 7).some(value => value !== '');
+    const old = row[7];
+    const valid = typeof old === 'string' && /^[a-zA-Z0-9-]{1,100}$/.test(old) && counts.get(old) === 1;
+    if (!active || !valid) row[7] = active ? Utilities.getUuid() : '';
+    if (row[7] !== old) {
+      changed = true;
+      if (Object.prototype.hasOwnProperty.call(config.acknowledgements, old)) {
+        delete config.acknowledgements[old];
+        changedConfig = true;
+      }
+    }
+    if (row[7] && Object.prototype.hasOwnProperty.call(config.acknowledgements, row[7]) &&
+        config.acknowledgements[row[7]] !== workbookExpenseSignature_(row, timezone, baseCurrency)) {
+      delete config.acknowledgements[row[7]];
+      changedConfig = true;
+    }
+  });
+  if (changed) sheet.getRange(2, 8, MAX_DATA_ROWS, 1).setValues(rows.map(row => [row[7]]));
+  if (changedConfig) saveWorkbookConfig_(config);
+  return rows;
+}
+
+function captureWorkbookRaw_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const setup = ss.getSheetByName(SHEET_SETUP);
+  const expenses = ss.getSheetByName(SHEET_EXPENSES);
+  const advanced = workbookV3_();
+  const raw = {
+    format: 'travel-expense-recovery', schemaVersion: 1, advanced,
+    tripId: workbookTripId_(), timezone: ss.getSpreadsheetTimeZone(),
+    setup: setup.getRange('B2:B7').getValues().map(row => row.map(encodeTripCell_)),
+    timezoneCell: encodeTripCell_(setup.getRange(SETUP_TIMEZONE_CELL).getValue()),
+    roster: setup.getRange(ROSTER_START_ROW, 1, MAX_PARTICIPANTS, 3).getValues().map(row => row.map(encodeTripCell_)),
+    expenses: expenses.getRange(2, 1, MAX_DATA_ROWS, advanced ? 8 :
+      expenses.getRange(1, 6).getValue() === 'Currency' ? 6 : 5).getValues()
+      .map(row => (row.length === 5 ? [...row, ''] : row).map(encodeTripCell_)),
+    config: advanced ? JSON.parse(JSON.stringify(readWorkbookConfig_())) : null
+  };
+  return raw;
+}
+
+function workbookRawFingerprint_(raw) {
+  return workbookHash_({ ...raw, setup: raw.setup.map((row, index) => index >= 3 ? [false] : row) });
+}
+
+function createRecoveryVersion_(reason, suppliedRaw) {
+  const raw = suppliedRaw || captureWorkbookRaw_();
+  const version = { id: Utilities.getUuid(), tripId: raw.tripId, at: new Date().toISOString(), reason, raw };
+  workbookPut_(`version:${version.id}`, version);
+  const indexKey = `versions:${raw.tripId}`;
+  const index = workbookGet_(indexKey) || [];
+  index.push({ id: version.id, at: version.at, reason });
+  workbookPut_(indexKey, index);
+  const directory = workbookGet_('history-directory') || [];
+  const name = String(raw.setup[0][0] || '(Untitled trip)').slice(0, 100);
+  const entry = directory.find(item => item.id === raw.tripId);
+  if (!entry || entry.name !== name) {
+    if (entry) entry.name = name;
+    else directory.push({ id: raw.tripId, name });
+    workbookPut_('history-directory', directory);
+  }
+  workbookStatus_('Recovery', `Checkpoint saved: ${version.at}`);
+  if (!workbookPendingOperation_()) pruneRecoveryVersions_(raw.tripId);
+  return version;
+}
+
+function pruneRecoveryVersions_(tripId) {
+  const key = `versions:${tripId}`;
+  const index = workbookGet_(key) || [];
+  if (index.length <= 20) return;
+  const expired = index.slice(0, -20);
+  workbookPut_(key, index.slice(-20));
+  expired.forEach(version => workbookDelete_(`version:${version.id}`));
+}
+
+function autoCheckpointWorkbook_() {
+  const raw = captureWorkbookRaw_();
+  const key = `checkpoint:${raw.tripId}`;
+  const previous = workbookGet_(key);
+  const fingerprint = workbookRawFingerprint_(raw);
+  if (previous && (previous.fingerprint === fingerprint || Date.now() - previous.time < 300000)) return;
+  const version = createRecoveryVersion_('Automatic checkpoint', raw);
+  workbookPut_(key, { time: Date.now(), fingerprint, version: version.id });
+  pruneRecoveryVersions_(raw.tripId);
+}
+
+function workbookStatus_(kind, message) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const dashboard = ss.getSheetByName('Dashboard');
+  if (dashboard) dashboard.getRange(kind === 'Recovery' ? 'B13' : 'B14').setValue(literalSheetCell_(message));
+}
+
+function workbookOrganizer_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const email = Session.getEffectiveUser().getEmail();
+  const owner = ss.getOwner();
+  if (!email || (owner && owner.getEmail() !== email)) {
+    throw new Error('The spreadsheet owner must install or run workbook maintenance.');
+  }
+  return email;
+}
+
+function workbookProtect_(range, description) {
+  const protection = range.protect().setDescription(description);
+  protection.addEditor(workbookOrganizer_());
+  protection.removeEditors(protection.getEditors());
+  if (protection.canDomainEdit()) protection.setDomainEdit(false);
+  protection.setWarningOnly(false);
+  return protection;
+}
+
+function workbookOriginalProtections_() {
+  return SpreadsheetApp.getActiveSpreadsheet().getSheets().flatMap(sheet =>
+    sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE).map(protection => ({
+      sheet: sheet.getName(), description: protection.getDescription(),
+      range: protection.getRange().getA1Notation(), warningOnly: protection.isWarningOnly(),
+      editors: protection.getEditors().map(editor => editor.getEmail()), domain: protection.canDomainEdit()
+    })));
+}
+
+function workbookReleaseMaintenance_(operation) {
+  const description = `Workbook maintenance ${operation.id}`;
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  ss.getSheets().forEach(sheet => {
+    sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE)
+      .filter(protection => protection.getDescription() === description)
+      .forEach(protection => protection.remove());
+  });
+  if (ss.getSheets().some(sheet => sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE)
+      .some(protection => protection.getDescription() === description))) {
+    throw new Error('Maintenance protection cleanup is incomplete. Run Recover Interrupted Workbook Operation.');
+  }
+}
+
+function workbookRestrictMaintenance_(operation) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  [SHEET_SETUP, SHEET_EXPENSES, 'Budgets', 'Quick Entry', 'History'].forEach(name => {
+    const sheet = ss.getSheetByName(name);
+    if (sheet) workbookProtect_(sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()),
+      `Workbook maintenance ${operation.id}`);
+  });
+}
+
+function writeWorkbookRaw_(raw) {
+  validateRecoveryEnvelope_(raw);
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const setup = ss.getSheetByName(SHEET_SETUP);
+  const sheet = ss.getSheetByName(SHEET_EXPENSES);
+  ss.setSpreadsheetTimeZone(raw.timezone);
+  setup.getRange('B2:B7').clearDataValidations().setValues(raw.setup.map(row => row.map(decodeTripCell_)));
+  setup.getRange(SETUP_TRIP_ID_CELL).setValue(raw.tripId);
+  setup.getRange(SETUP_TIMEZONE_CELL).setValue(decodeTripCell_(raw.timezoneCell));
+  setup.getRange(ROSTER_START_ROW, 1, MAX_PARTICIPANTS, 3)
+    .setValues(raw.roster.map(row => row.map(decodeTripCell_)));
+  workbookFit_(sheet, MAX_DATA_ROWS + 15, 26);
+  sheet.getRange(1, 1, MAX_DATA_ROWS + 15, 26).breakApart().clearContent().clearDataValidations();
+  sheet.getRange(1, 1, 1, raw.advanced ? 8 : 6).setValues([raw.advanced
+    ? ['Date', 'Description', 'Amount', 'Paid By', 'Split Among', 'Currency', 'Category', 'Expense ID']
+    : ['Date', 'Description', 'Amount', 'Paid By', 'Split Among', 'Currency']]);
+  workbookLayoutCache_ = raw.advanced;
+  if (raw.expenses.length) sheet.getRange(2, 1, raw.expenses.length, raw.expenses[0].length)
+    .setValues(raw.expenses.map(row => row.map(decodeTripCell_)));
+  workbookConfigCache_ = null;
+  if (raw.advanced) saveWorkbookConfig_(raw.config);
+  SpreadsheetApp.flush();
+}
+
+function validateRecoveryEnvelope_(raw) {
+  const cell = value => typeof value === 'string' || typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value)) ||
+    (value && value.type === 'date' && typeof value.value === 'string' && Number.isFinite(Date.parse(value.value)));
+  const rows = (value, height, width) => Array.isArray(value) && value.length === height &&
+    value.every(row => Array.isArray(row) && row.length === width && row.every(cell));
+  if (!raw || raw.format !== 'travel-expense-recovery' || raw.schemaVersion !== 1 ||
+      !/^[a-zA-Z0-9-]{1,100}$/.test(raw.tripId) || typeof raw.timezone !== 'string' ||
+      typeof raw.advanced !== 'boolean' || !cell(raw.timezoneCell) || !rows(raw.setup, 6, 1) || !rows(raw.roster, 15, 3) ||
+      !Array.isArray(raw.expenses) || raw.expenses.length > MAX_DATA_ROWS ||
+      !raw.expenses.every(row => Array.isArray(row) && row.length === (raw.advanced ? 8 : 6) && row.every(cell))) {
+    throw new Error('Invalid recovery envelope. Current inputs were not replaced.');
+  }
+  if (raw.advanced) validateWorkbookConfig_(raw.config);
+  Utilities.formatDate(new Date(), raw.timezone, 'yyyy-MM-dd');
+  return raw;
+}
+
+function normalizedWorkbookRaw_(raw) {
+  const result = JSON.parse(JSON.stringify(raw));
+  if (!raw.advanced && result.timezoneCell === '') result.timezoneCell = result.timezone;
+  result.config = result.config || workbookConfigDefaults_();
+  const counts = new Map();
+  result.expenses.forEach(row => { if (row[7]) counts.set(row[7], (counts.get(row[7]) || 0) + 1); });
+  result.advanced = true;
+  result.expenses = Array.from({ length: MAX_DATA_ROWS }, (_, index) => {
+    const row = result.expenses[index] || [];
+    const values = Array.from({ length: 8 }, (_, column) => row[column] === undefined ? '' : row[column]);
+    const active = values.slice(0, 7).some(value => value !== '');
+    const valid = typeof values[7] === 'string' && /^[a-zA-Z0-9-]{1,100}$/.test(values[7]) && counts.get(values[7]) === 1;
+    if (!active || !valid) {
+      delete result.config.acknowledgements[values[7]];
+      values[7] = active ? Utilities.getUuid() : '';
+    }
+    return values;
+  });
+  result.setup[4] = [false];
+  result.setup[5] = [false];
+  return result;
+}
+
+function replaceWorkbook_(kind, target, boundDestination) {
+  if (workbookLockDepth_ === 0) return withTripLock_(() => replaceWorkbook_(kind, target, boundDestination));
+  workbookOrganizer_();
+  validateRecoveryEnvelope_(target);
+  const unfinished = workbookGet_('operation');
+  if (unfinished && !['complete', 'aborted'].includes(unfinished.phase)) {
+    throw new Error('An interrupted operation needs recovery before another replacement.');
+  }
+  const operation = {
+    id: Utilities.getUuid(), kind, phase: 'prepared', target,
+    originalProtections: workbookOriginalProtections_(), at: new Date().toISOString()
+  };
+  workbookPut_('operation', operation);
+  workbookStatus_('Processing', 'Maintenance: everyone must pause editing, including the owner.');
+  workbookMaintenance_ = true;
+  try {
+    workbookRestrictMaintenance_(operation);
+    operation.phase = 'restricted';
+    workbookPut_('operation', operation);
+    const before = captureWorkbookRaw_();
+    if (boundDestination && boundDestination !== workbookRawFingerprint_(before)) {
+      throw new Error('Current inputs changed after preview. Preview again before restoring.');
+    }
+    if (workbookRawFingerprint_(before) !== workbookRawFingerprint_(captureWorkbookRaw_())) {
+      throw new Error('Inputs changed during capture. Pause editing and retry.');
+    }
+    operation.before = before;
+    const version = createRecoveryVersion_(`Before ${kind}`, before);
+    operation.checkpoint = version.id;
+    operation.phase = 'checkpointed';
+    workbookPut_('operation', operation);
+    archiveWorkbookRaw_(before);
+    if (workbookRawFingerprint_(before) !== workbookRawFingerprint_(captureWorkbookRaw_())) {
+      throw new Error('Inputs changed before replacement. Nothing was replaced.');
+    }
+    operation.phase = 'writing';
+    workbookPut_('operation', operation);
+    writeWorkbookRaw_(target);
+    if (workbookRawFingerprint_(target) !== workbookRawFingerprint_(captureWorkbookRaw_())) {
+      throw new Error('Replacement verification failed. Recovery is required; competing edits will not be overwritten automatically.');
+    }
+    operation.phase = 'verifying';
+    workbookPut_('operation', operation);
+    renderWorkbookUi_(true);
+    recalculateAll(true);
+    operation.phase = 'cleanup';
+    workbookPut_('operation', operation);
+    workbookReleaseMaintenance_(operation);
+    operation.phase = 'complete';
+    workbookPut_('operation', operation);
+    pruneRecoveryVersions_(before.tripId);
+    pruneRecoveryVersions_(target.tripId);
+    workbookStatus_('Processing', `${kind} complete. Reconfirm setup after reviewing inputs.`);
+    return true;
+  } catch (error) {
+    operation.error = error.message;
+    if (['prepared', 'restricted', 'checkpointed'].includes(operation.phase)) {
+      workbookReleaseMaintenance_(operation);
+      operation.phase = 'aborted';
+    }
+    workbookPut_('operation', operation);
+    workbookStatus_('Processing', `${operation.phase === 'aborted' ? 'Stopped' : 'Recovery required'}: ${error.message}`);
+    const dashboard = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Dashboard');
+    if (dashboard) dashboard.getRange('B3').setValue(`Operation incomplete: ${error.message}`);
+    throw error;
+  } finally {
+    workbookMaintenance_ = false;
+  }
+}
+
+function recoverWorkbookOperation() {
+  return tripAction_(() => {
+    workbookOrganizer_();
+    const operation = workbookGet_('operation');
+    if (!operation || ['complete', 'aborted'].includes(operation.phase)) {
+      PropertiesService.getDocumentProperties().setProperty('WORKBOOK_OPERATION_PHASE', operation ? operation.phase : 'aborted');
+      return 'No interrupted operation needs recovery.';
+    }
+    workbookMaintenance_ = true;
+    try {
+      // This is an explicit organizer action, not an automatic rollback over possible later edits.
+      const current = captureWorkbookRaw_();
+      createRecoveryVersion_('Before explicit interrupted-operation recovery', current);
+      if (operation.before && !['cleanup', 'verifying'].includes(operation.phase)) {
+        writeWorkbookRaw_(operation.before);
+        if (workbookRawFingerprint_(captureWorkbookRaw_()) !== workbookRawFingerprint_(operation.before)) {
+          throw new Error('Rollback verification failed. Original checkpoint and operation journal remain available.');
+        }
+      }
+      if (workbookV3_()) {
+        renderWorkbookUi_(true);
+        recalculateAll(true);
+      } else {
+        updateExpensesStructure();
+        recalculateAll(true);
+      }
+      workbookReleaseMaintenance_(operation);
+      operation.phase = 'aborted';
+      operation.recoveredAt = new Date().toISOString();
+      workbookPut_('operation', operation);
+      pruneRecoveryVersions_(current.tripId);
+      if (operation.before) pruneRecoveryVersions_(operation.before.tripId);
+      workbookStatus_('Processing', 'Interrupted operation recovered. Review inputs before confirming.');
+      return 'Interrupted operation recovered; original protections preserved.';
+    } finally {
+      workbookMaintenance_ = false;
+    }
+  });
+}
+
+function installWorkbookAutomation() {
+  const email = workbookOrganizer_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const exists = ScriptApp.getProjectTriggers().some(trigger =>
+    trigger.getHandlerFunction() === 'onAuthorizedEdit' && trigger.getTriggerSourceId() === ss.getId());
+  if (!exists) ScriptApp.newTrigger('onAuthorizedEdit').forSpreadsheet(ss).onEdit().create();
+  PropertiesService.getDocumentProperties().setProperty('AUTOMATIC_FX_EDIT', ss.getId());
+  PropertiesService.getDocumentProperties().setProperty('WORKBOOK_ORGANIZER', email);
+  const history = ss.getSheetByName('History');
+  [history, ss.getSheetByName(WORKBOOK_STATE_SHEET)].filter(Boolean).forEach(sheet => {
+    const description = 'Workbook organizer controls';
+    if (!sheet.getProtections(SpreadsheetApp.ProtectionType.RANGE).some(p => p.getDescription() === description)) {
+      workbookProtect_(sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns()), description);
+    }
+  });
+  workbookStatus_('Processing', `Automation installed for ${email}. New submissions need their own saved acknowledgement.`);
+  if (workbookV3_()) withTripLock_(() => {
+    if (workbookPendingOperation_()) return;
+    reconcileWorkbookRequests_();
+    repairExpenseIds_();
+    recalculateAll(true);
+  });
+  return true;
+}
+
+function upgradeMobileWorkbook() {
+  return tripAction_(() => {
+    workbookOrganizer_();
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    if (!ss.getSheetByName(SHEET_SETUP) || !ss.getSheetByName(SHEET_EXPENSES)) {
+      throw new Error('Initialize a fresh tracker with setup() before upgrading.');
+    }
+    const unfinished = workbookGet_('operation');
+    if (unfinished && !['complete', 'aborted'].includes(unfinished.phase)) {
+      throw new Error('Recover the interrupted operation before upgrading or repairing the workbook.');
+    }
+    if (workbookV3_()) {
+      renderWorkbookUi_(false);
+      installWorkbookAutomation();
+      recalculateAll(true);
+      return 'Mobile workbook repaired. Existing inputs and draft forms were retained.';
+    }
+    const raw = normalizedWorkbookRaw_(captureWorkbookRaw_());
+    replaceWorkbook_('mobile workbook upgrade', raw);
+    installWorkbookAutomation();
+    return 'Mobile workbook ready. Open Quick Entry on your phone. Review Setup and confirm expenses on Dashboard.';
+  });
+}
+
+function portableWorkbookRaw_(trip) {
+  const raw = {
+    format: 'travel-expense-recovery', schemaVersion: 1, advanced: true, tripId: trip.id,
+    timezone: trip.timeZone, timezoneCell: trip.timeZone,
+    setup: [[trip.setup.tripName], [trip.setup.participantCount], [trip.setup.currency], ['Checking...'], [false], [false]],
+    roster: trip.setup.roster,
+    expenses: trip.expenses.map(row => trip.schemaVersion === 1 ? [...row, ''] : row),
+    config: trip.schemaVersion === 3 ? trip.workbook : null
+  };
+  if (!raw.config) {
+    raw.config = workbookConfigDefaults_();
+    raw.config.budgetCurrency = currencyCode_(trip.setup.currency);
+  }
+  return normalizedWorkbookRaw_(raw);
+}
+
+function restorePortableV3_(trip) {
+  const target = portableWorkbookRaw_(trip);
+  replaceWorkbook_('load/import trip', target);
+  installWorkbookAutomation();
+}
+
+function newTripV3_() {
+  const ui = SpreadsheetApp.getUi();
+  if (!workbookQuiet_ && ui.alert('New Trip', 'Checkpoint current inputs and start a blank trip? Pause all editing during replacement.',
+    ui.ButtonSet.YES_NO) !== ui.Button.YES) return false;
+  return tripAction_(() => {
+    const raw = captureWorkbookRaw_();
+    raw.tripId = Utilities.getUuid();
+    raw.setup = [[''], [2], ['₹'], ['Checking...'], [false], [false]];
+    raw.roster = Array.from({ length: 15 }, (_, index) => [index + 1, '', '']);
+    raw.expenses = [];
+    raw.config = { ...workbookConfigDefaults_(), budgetCurrency: 'INR' };
+    replaceWorkbook_('new trip', normalizedWorkbookRaw_(raw));
+    return 'New trip ready. Previous inputs remain in History.';
+  });
+}
+
+function archiveWorkbookRaw_(raw) {
+  const trip = {
+    format: 'travel-expense-trip', schemaVersion: raw.advanced ? 3 : 2, id: raw.tripId,
+    savedAt: new Date().toISOString(), timeZone: raw.timezone,
+    setup: { tripName: String(raw.setup[0][0]), participantCount: Number(raw.setup[1][0]),
+      currency: String(raw.setup[2][0]), confirmed: raw.setup[4][0] === true, roster: raw.roster },
+    expenses: raw.expenses.map(row => [...row])
+  };
+  while (trip.expenses.length && trip.expenses[trip.expenses.length - 1].every(value => value === '')) trip.expenses.pop();
+  if (raw.advanced) trip.workbook = raw.config;
+  try { validateTrip_(trip); } catch (error) { return; } // Invalid drafts remain in raw recovery storage.
+  saveTripSnapshot_(trip);
+}
+
+function workbookExpenseSignature_(row, timezone, baseCurrency) {
+  const norm = value => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  let date = row[0] instanceof Date ? Utilities.formatDate(row[0], timezone, 'yyyy-MM-dd') : norm(row[0]);
+  let currency;
+  try { currency = currencyCode_(row[5] || baseCurrency || getCurrencySymbol_()); } catch (error) { currency = norm(row[5]); }
+  return workbookHash_([date, norm(row[3]), toMinor_(row[2]), currency, norm(row[1])]);
+}
+
+function decorateWorkbookLedger_(ledger, data) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
+  const ids = sheet.getRange(2, 8, data.length, 1).getValues();
+  const config = readWorkbookConfig_();
+  const timezone = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  const baseCurrency = getCurrencySymbol_();
+  const groups = new Map();
+  const warnings = new Map();
+  ledger.expenses.forEach(expense => {
+    const row = data[expense.row - 2];
+    expense.category = String(row[6] || '').trim() || 'Uncategorized';
+    expense.day = row[0] instanceof Date ? Utilities.formatDate(row[0], timezone, 'yyyy-MM-dd') : String(row[0] || 'No date');
+    expense.expenseId = ids[expense.row - 2][0];
+    expense.duplicateSignature = workbookExpenseSignature_(row, timezone, baseCurrency);
+    const group = groups.get(expense.duplicateSignature) || [];
+    group.push(expense);
+    groups.set(expense.duplicateSignature, group);
+  });
+  let duplicateCount = 0;
+  groups.forEach(group => {
+    if (group.length < 2) return;
+    group.forEach(expense => {
+      const acknowledged = config.acknowledgements[expense.expenseId] === expense.duplicateSignature;
+      if (!acknowledged) duplicateCount++;
+      warnings.set(expense.row, acknowledged ? 'Duplicate acknowledged' : 'Possible duplicate: check Y to acknowledge a legitimate repeat.');
+    });
+  });
+  ledger.errors.forEach(message => {
+    const match = /^Row (\d+):/.exec(message);
+    if (match) warnings.set(Number(match[1]), message);
+  });
+  ledger.duplicateCount = duplicateCount;
+  ledger.warnings = warnings;
+  ledger.excludedRows = data.filter((row, index) => row.some(value => value !== '') && !ledger.rowRecords.get(index + 2)).length;
+  return ledger;
+}
+
+function workbookBudgetMinor_(value) {
+  if (value === '') return null;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0 || !Number.isSafeInteger(Math.round(number * 100))) {
+    throw new Error('Budgets must be blank or nonnegative amounts. Zero is an advisory zero allowance.');
+  }
+  return Math.round(number * 100);
+}
+
+function buildWorkbookSummary_(ledger, config) {
+  const categories = new Map(config.categories.map(category => [category, 0]));
+  const days = new Map();
+  ledger.expenses.forEach(expense => {
+    const category = expense.category || 'Uncategorized';
+    categories.set(category, (categories.get(category) || 0) + expense.amountMinor);
+    const day = expense.day || expense.date || 'No date';
+    days.set(day, (days.get(day) || 0) + expense.amountMinor);
+  });
+  const budgetCurrent = config.budgetCurrency === workbookCurrency_();
+  const tripLimit = workbookBudgetMinor_(config.tripBudget);
+  const categoryRows = [...categories].map(([category, minor]) => {
+    const limit = Object.prototype.hasOwnProperty.call(config.categoryBudgets, category)
+      ? workbookBudgetMinor_(config.categoryBudgets[category]) : null;
+    return [category, fromMinor_(minor), budgetCurrent && limit !== null ? fromMinor_(limit) : '',
+      !budgetCurrent ? 'Review budget currency' : limit !== null && minor > limit ? 'Over budget' : ''];
+  });
+  return {
+    budgetCurrent, tripLimit,
+    remaining: budgetCurrent && tripLimit !== null ? tripLimit - ledger.totalMinor : null,
+    categoryRows, dayRows: [...days].sort((a, b) => a[0].localeCompare(b[0])).map(([day, minor]) => [day, fromMinor_(minor)]),
+    personRows: ledger.roster.map(person => [person.name, fromMinor_(ledger.spent.get(person.id) || 0),
+      fromMinor_(ledger.paid.get(person.id) || 0)])
+  };
+}
+
+function workbookSurface_(name, title) {
+  const sheet = workbookSheet_(name);
+  workbookFit_(sheet, 1000, 6);
+  sheet.getRange('A1:B1').breakApart().merge().setValue(title)
+    .setBackground(COLOR.HEADER_DARK).setFontColor('#FFFFFF').setFontWeight('bold');
+  sheet.setFrozenRows(2);
+  sheet.setColumnWidth(1, 145);
+  sheet.setColumnWidth(2, 215);
+  sheet.setRowHeights(1, Math.max(1, sheet.getMaxRows()), 32);
+  sheet.getRange(1, 1, sheet.getMaxRows(), 2).setFontFamily('Arial').setFontSize(12).setWrap(true);
+  return sheet;
+}
+
+function workbookLink_(sheet, row, label) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const url = `https://docs.google.com/spreadsheets/d/${ss.getId()}/edit#gid=${sheet.getSheetId()}&range=A${row}:B${row + 18}`;
+  return SpreadsheetApp.newRichTextValue().setText(label).setLinkUrl(url).build();
+}
+
+function renderWorkbookUi_(replaceSettings) {
+  if (!workbookV3_()) return;
+  const timezoneCell = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP).getRange(SETUP_TIMEZONE_CELL).getValue();
+  ensureTripControls_();
+  SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP).getRange(SETUP_TIMEZONE_CELL).setValue(literalSheetCell_(timezoneCell));
+  const config = readWorkbookConfig_();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const budgets = workbookSurface_('Budgets', 'BUDGETS — warnings only');
+  budgets.getRange('A2:A6').setValues([['Current currency'], ['Budget currency'], ['Trip allowance'],
+    ['Confirm new currency'], ['Blank = no limit; zero = zero allowance']]);
+  budgets.getRange('B2').setValue(workbookCurrency_());
+  if (replaceSettings || budgets.getRange('A8').getValue() !== 'Category') {
+    budgets.getRange('B3').setValue(config.budgetCurrency);
+    budgets.getRange('B4').setValue(config.tripBudget);
+    budgets.getRange('B5').insertCheckboxes().setValue(false);
+    budgets.getRange('A8:B108').clearContent();
+    budgets.getRange('A8:B8').setValues([['Category', 'Allowance']]);
+    if (config.categories.length) budgets.getRange(9, 1, config.categories.length, 2).setValues(config.categories.map(category =>
+      [literalSheetCell_(category), config.categoryBudgets[category] === undefined ? '' : config.categoryBudgets[category]]));
+  }
+  budgets.getRange('B4').setNumberFormat('#,##0.00');
+  budgets.getRange('B9:B108').setNumberFormat('#,##0.00');
+  const quick = workbookSurface_('Quick Entry', 'QUICK ENTRY');
+  const roster = getRoster();
+  const tripName = ss.getSheetByName(SHEET_SETUP).getRange(SETUP_TRIP_NAME_CELL).getValue();
+  quick.getRange('A2:B2').setValues([['Active trip', literalSheetCell_(tripName)]]);
+  quick.getRange('A3:B3').setValues([['Choose your block below', 'Shared cells: use your own labeled block.']]);
+  for (let index = 0; index < MAX_PARTICIPANTS; index++) {
+    const first = QUICK_BLOCK_FIRST + index * QUICK_BLOCK_HEIGHT;
+    const person = roster[index];
+    const name = person ? person.name : `Inactive slot ${index + 1}`;
+    quick.getRange(4 + index, 1).setRichTextValue(workbookLink_(quick, first, `${index + 1}. ${name}`));
+    quick.getRange(first, 1, 1, 2).setValues([['Participant', literalSheetCell_(name)]])
+      .setBackground(COLOR.HEADER).setFontColor('#FFFFFF').setFontWeight('bold');
+    quick.getRange(first + 1, 1).setRichTextValue(workbookLink_(quick, 1, 'Back to participants'));
+    quick.getRange(first + 2, 1, 19, 1).setValues([
+      ['Template'], ['Date'], ['Description'], ['Amount'], ['Payer'], ['Split among'], ['Currency'], ['Category'],
+      ['Copy Expenses row #'], ['Load copy'], ['Add expense'], ['Expense status'], ['Recovery status'],
+      ['Destination trip'], ['Submitting for'], ['Reset draft'], ['Request ID'], ['Bound trip ID'], ['Instructions']
+    ]);
+    quick.getRange(first + 15, 2).setValue(literalSheetCell_(tripName));
+    quick.getRange(first + 16, 2).setValue(literalSheetCell_(name));
+    [11, 12, 17].forEach(offset => {
+      if (quick.getRange(first + offset, 2).getValue() === '') quick.getRange(first + offset, 2).insertCheckboxes().setValue(false);
+    });
+    quick.getRange(first + 3, 2).setNumberFormat('dd-mmm-yyyy');
+    quick.getRange(first + 5, 2).setNumberFormat('#,##0.00');
+    const rule = choices => SpreadsheetApp.newDataValidation().requireValueInList(choices, true).setAllowInvalid(true).build();
+    quick.getRange(first + 2, 2).setDataValidation(rule(config.templates.map(template => template.name)));
+    quick.getRange(first + 6, 2).setDataValidation(rule(roster.map(item => item.name)));
+    quick.getRange(first + 9, 2).setDataValidation(rule(config.categories));
+    quick.getRange(first + 20, 2).setValue('Review payer and amount. Check Add expense. Wait for Expense saved.');
+    quick.getRange(first + 13, 2).setFormula(`=IF(B${first + 12},"Pending — wait for script acknowledgement",B${first + 22})`);
+    quick.hideRows(first + 18, 2);
+    quick.hideRows(first + 22, 1);
+    if (!quick.getRange(first + 4, 2).getValue() && !quick.getRange(first + 5, 2).getValue() &&
+        !quick.getRange(first + 6, 2).getValue()) resetWorkbookDraft_(index + 1, true);
+  }
+  quick.getRange(TEMPLATE_FIRST_ROW, 1, 1, 6).setValues([['Template name', 'Description', 'Category', 'Payer', 'Split among', 'Currency']]);
+  if (replaceSettings || !quick.getRange(TEMPLATE_FIRST_ROW + 1, 1).getValue()) {
+    quick.getRange(TEMPLATE_FIRST_ROW + 1, 1, 50, 6).clearContent();
+    if (config.templates.length) quick.getRange(TEMPLATE_FIRST_ROW + 1, 1, config.templates.length, 6)
+      .setValues(config.templates.map(template => ['name', 'description', 'category', 'payer', 'split', 'currency']
+        .map(key => literalSheetCell_(template[key]))));
+  }
+  const dashboard = workbookSurface_('Dashboard', 'TRIP DASHBOARD');
+  dashboard.getRange('A2:A16').setValues([['Trip'], ['Calculation status'], ['Currency'], ['Total spent'], ['Trip budget'],
+    ['Remaining budget'], ['Excluded rows'], ['Unacknowledged duplicates'], ['Valid expenses'], ['Budget status'],
+    ['Backup timing'], ['Recovery status'], ['Processing status'], ['Refresh / retry processing'], ['Confirm expenses']]);
+  dashboard.getRange('B12').setValue('Five minutes is a throttle, not a backup guarantee.');
+  [15, 16].forEach(row => {
+    if (dashboard.getRange(row, 2).getValue() === '') dashboard.getRange(row, 2).insertCheckboxes().setValue(false);
+  });
+  renderWorkbookHistory_(workbookTripId_());
+  updateWorkbookExpenseLayout_();
+  ['Dashboard', 'Quick Entry'].forEach((name, index) => {
+    ss.setActiveSheet(ss.getSheetByName(name));
+    ss.moveActiveSheet(index + 1);
+  });
+  ss.setActiveSheet(dashboard);
+}
+
+function updateWorkbookExpenseLayout_() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
+  const names = getRoster().map(person => person.name);
+  workbookFit_(sheet, MAX_DATA_ROWS + 15, 26);
+  // A:H are permanent inputs/identities in version 3. Clear generated output only.
+  sheet.getRange(1, 9, MAX_DATA_ROWS + 15, 18).breakApart().clearContent().clearFormat().clearDataValidations();
+  const headers = ['Date', 'Description', 'Amount', 'Paid By', 'Split Among', 'Currency', 'Category', 'Expense ID', ...names];
+  sheet.getRange(1, 1, 1, headers.length).setValues([headers.map(literalSheetCell_)])
+    .setBackground(COLOR.HEADER).setFontColor('#FFFFFF').setFontWeight('bold');
+  sheet.getRange(1, WORKBOOK_WARNING_COL, 1, 2).setValues([['Validation / duplicate warning', 'Acknowledge duplicate']]);
+  sheet.getRange(2, WORKBOOK_WARNING_COL + 1, MAX_DATA_ROWS, 1).insertCheckboxes();
+  sheet.getRange('A1').setNote('Sort complete expense rows A:Y together. Sorting only part of a row is unsupported.');
+  sheet.getRange('H1').setNote('Stable internal identity. Do not edit or copy IDs manually.');
+  sheet.hideColumns(8);
+  sheet.setFrozenRows(1);
+  sheet.getRange(2, 1, MAX_DATA_ROWS, 1).setNumberFormat('dd-mmm-yyyy');
+  sheet.getRange(2, 3, MAX_DATA_ROWS, 1).setNumberFormat('#,##0.00');
+  sheet.getRange(2, 5, MAX_DATA_ROWS, 4).setNumberFormat('@');
+  sheet.getRange(2, 1, MAX_DATA_ROWS, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireDate().setAllowInvalid(false).build());
+  sheet.getRange(2, 7, MAX_DATA_ROWS, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(readWorkbookConfig_().categories, true).setAllowInvalid(true).build());
+  sheet.getRange(2, 4, MAX_DATA_ROWS, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(names.length ? names : ['Complete Setup'], true).setAllowInvalid(true).build());
+  sheet.getRange(2, 9, MAX_DATA_ROWS, Math.max(1, names.length)).setNumberFormat(getCurrencyFormat_());
+  sheet.setColumnWidth(2, 200);
+  sheet.setColumnWidth(WORKBOOK_WARNING_COL, 300);
+}
+
+function refreshWorkbookViews_(ledger) {
+  const config = readWorkbookConfig_();
+  const summary = buildWorkbookSummary_(ledger, config);
+  const dashboard = workbookSheet_('Dashboard');
+  const setup = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP);
+  const validSetup = validateSetupStatus();
+  dashboard.getRange('B2:B11').setValues([
+    [literalSheetCell_(setup.getRange(SETUP_TRIP_NAME_CELL).getValue())],
+    [!validSetup ? `Setup incomplete: ${setup.getRange(SETUP_STATUS_CELL).getValue()}` : ledger.errors.length ?
+      `PARTIAL TOTALS: ${ledger.excludedRows || 0} excluded row(s). ${ledger.errors.join(' | ')}` : `Updated ${new Date().toISOString()}`],
+    [getCurrencySymbol_()], [fromMinor_(ledger.totalMinor)],
+    [summary.budgetCurrent && summary.tripLimit !== null ? fromMinor_(summary.tripLimit) : 'No active limit'],
+    [summary.remaining === null ? '' : fromMinor_(summary.remaining)], [ledger.excludedRows || 0],
+    [ledger.duplicateCount || 0], [ledger.expenses.length],
+    [!summary.budgetCurrent ? 'Budget currency review required in Budgets!B5' : summary.remaining !== null && summary.remaining < 0 ? 'OVER BUDGET — expenses remain permitted' : 'Advisory limits']
+  ]);
+  dashboard.getRange('B5:B7').setNumberFormat('#,##0.00');
+  const tables = [
+    { title: 'Category spending', header: ['Category', 'Spent', 'Allowance', 'Status'], rows: summary.categoryRows },
+    { title: 'Daily spending', header: ['Day', 'Spent'], rows: summary.dayRows },
+    { title: 'Participant consumption and payments', header: ['Person', 'Consumed', 'Paid'], rows: summary.personRows }
+  ];
+  let cursor = 20;
+  const chartRanges = [];
+  const oldHeight = Number(PropertiesService.getDocumentProperties().getProperty('WORKBOOK_DASHBOARD_HEIGHT') || 20);
+  workbookFit_(dashboard, Math.max(oldHeight, 800), 6);
+  dashboard.getRange(20, 1, Math.max(1, oldHeight - 19), 4).clearContent();
+  tables.forEach(table => {
+    dashboard.getRange(cursor, 1).setValue(table.title).setFontWeight('bold');
+    dashboard.getRange(cursor + 1, 1, 1, table.header.length).setValues([table.header]);
+    if (table.rows.length) dashboard.getRange(cursor + 2, 1, table.rows.length, table.header.length)
+      .setValues(table.rows.map(row => row.map(literalSheetCell_)));
+    const chartRow = cursor + table.rows.length + 3;
+    chartRanges.push({ range: dashboard.getRange(cursor + 1, 1, Math.max(2, table.rows.length + 1),
+      table.header.length === 4 ? 2 : table.header.length), row: chartRow, title: table.title, count: table.rows.length });
+    cursor = chartRow + 10;
+  });
+  PropertiesService.getDocumentProperties().setProperty('WORKBOOK_DASHBOARD_HEIGHT', String(cursor));
+  const chartShape = JSON.stringify(tables.map(table => table.rows.length));
+  if (PropertiesService.getDocumentProperties().getProperty('WORKBOOK_CHART_SHAPE') !== chartShape || !dashboard.getCharts().length) {
+    dashboard.getCharts().forEach(chart => dashboard.removeChart(chart));
+    chartRanges.filter(item => item.count > 0).forEach(item => dashboard.insertChart(dashboard.newChart().setChartType(Charts.ChartType.COLUMN)
+      .addRange(item.range).setNumHeaders(1).setPosition(item.row, 1, 0, 0)
+      .setOption('title', item.title).setOption('width', 355).setOption('height', 245).build()));
+    PropertiesService.getDocumentProperties().setProperty('WORKBOOK_CHART_SHAPE', chartShape);
+  }
+  const expenses = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
+  const warnings = Array.from({ length: MAX_DATA_ROWS }, (_, index) => {
+    const expense = ledger.rowRecords.get(index + 2);
+    return [literalSheetCell_(ledger.warnings ? ledger.warnings.get(index + 2) || '' : ''),
+      !!expense && config.acknowledgements[expense.expenseId] === expense.duplicateSignature];
+  });
+  expenses.getRange(2, WORKBOOK_WARNING_COL, MAX_DATA_ROWS, 2).setValues(warnings);
+}
+
+function workbookDraft_(slot) {
+  if (!Number.isInteger(slot) || slot < 1 || slot > MAX_PARTICIPANTS) throw new Error('Invalid participant draft slot.');
+  const sheet = workbookSheet_('Quick Entry');
+  const first = QUICK_BLOCK_FIRST + (slot - 1) * QUICK_BLOCK_HEIGHT;
+  return { sheet, first, values: sheet.getRange(first + 3, 2, 7, 1).getValues().map(row => row[0]),
+    tripId: String(sheet.getRange(first + 19, 2).getValue() || '') };
+}
+
+function resetWorkbookDraft_(slot, initializing) {
+  const draft = workbookDraft_(slot);
+  const previous = workbookGet_(`draft:${slot}`);
+  if (!initializing && previous) {
+    const receipt = workbookGet_(`receipt:${previous}`);
+    if (receipt && receipt.phase === 'writing') throw new Error('A submission needs reconciliation before this draft can be reset.');
+  }
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const today = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  draft.sheet.getRange(draft.first + 2, 2).clearContent();
+  draft.sheet.getRange(draft.first + 3, 2, 7, 1).setValues([
+    [Utilities.parseDate(today, ss.getSpreadsheetTimeZone(), 'yyyy-MM-dd')], [''], [''], [''], ['All'], [''], ['']
+  ]);
+  draft.sheet.getRange(draft.first + 18, 2).setValue(Utilities.getUuid());
+  draft.sheet.getRange(draft.first + 19, 2).setValue(workbookTripId_());
+  draft.sheet.getRange(draft.first + 22, 2).setValue('Ready — enter payer and amount.');
+  draft.sheet.getRange(draft.first + 14, 2).setValue('Expense saving and recovery checkpoints have separate statuses.');
+}
+
+function validateWorkbookDraft_(values) {
+  if (!validateSetupStatus()) throw new Error('Complete trip setup and participant names first.');
+  const roster = getRoster();
+  const payer = roster.find(person => person.name.toLowerCase() === String(values[3]).trim().toLowerCase());
+  if (!payer) throw new Error('Choose a payer from the current roster.');
+  const minor = toMinor_(values[2]);
+  if (!Number.isSafeInteger(minor) || minor <= 0) throw new Error('Enter a positive amount within the supported range.');
+  const row = [...values];
+  if (!(row[0] instanceof Date)) {
+    const date = fxDate_(row[0], SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone());
+    row[0] = Utilities.parseDate(date, SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone(), 'yyyy-MM-dd');
+  }
+  if (!Number.isFinite(row[0].getTime())) throw new Error('Enter a valid date.');
+  row[3] = payer.name;
+  parseSplitAmong_(row[4], roster, minor);
+  const source = currencyCode_(row[5] || getCurrencySymbol_());
+  const target = currencyCode_(getCurrencySymbol_());
+  if (source !== target) getFxRate_(source, target,
+    fxDate_(row[0], SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone()), { results: new Map() });
+  return row;
+}
+
+function reconcileWorkbookReceipt_(receipt) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
+  const rows = sheet.getRange(2, 1, MAX_DATA_ROWS, 8).getValues();
+  const matches = rows.flatMap((row, index) => row[7] === receipt.expenseId ? [index] : []);
+  if (matches.length > 1) throw new Error('Submission identity was copied. Organizer reconciliation is required.');
+  if (matches.length === 1) {
+    const row = rows[matches[0]].map(encodeTripCell_);
+    if (workbookHash_(row) !== receipt.payloadHash) throw new Error('Submitted expense was edited. It will not be appended again.');
+    receipt.phase = 'committed';
+    receipt.row = matches[0] + 2;
+    workbookPut_(`receipt:${receipt.id}`, receipt);
+    return true;
+  }
+  return receipt.phase === 'committed';
+}
+
+function submitWorkbookDraft_(slot) {
+  const draft = workbookDraft_(slot);
+  if (draft.tripId !== workbookTripId_()) throw new Error('Draft belongs to another trip. Reset draft before entering this trip.');
+  const boundHash = workbookHash_(draft.values.map(encodeTripCell_));
+  let generation = String(draft.sheet.getRange(draft.first + 18, 2).getValue() || '');
+  if (!generation) {
+    generation = Utilities.getUuid();
+    draft.sheet.getRange(draft.first + 18, 2).setValue(generation);
+  }
+  let previousId = workbookGet_(`draft:${slot}`);
+  let receipt = previousId ? workbookGet_(`receipt:${previousId}`) : null;
+  if (receipt && receipt.generation === generation && receipt.tripId === draft.tripId && receipt.draftHash === boundHash) {
+    if (!reconcileWorkbookReceipt_(receipt)) {
+      if (receipt.phase === 'writing') throw new Error('Submission outcome is uncertain. Organizer must inspect its request ID; do not submit a new copy.');
+      // An allocated request has not entered its write phase and can safely proceed.
+    }
+  } else {
+    if (receipt && receipt.phase === 'writing' && !reconcileWorkbookReceipt_(receipt)) {
+      throw new Error('Resolve the previous pending submission before changing this draft.');
+    }
+    if (slot > getRoster().length) throw new Error('This participant slot is inactive. Update Setup first.');
+    const values = validateWorkbookDraft_(draft.values);
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
+    const rows = sheet.getRange(2, 1, MAX_DATA_ROWS, 8).getValues();
+    const empty = rows.findIndex(row => row.every(value => value === ''));
+    if (empty < 0) throw new Error('All 500 expense rows are occupied. Draft retained.');
+    const id = Utilities.getUuid();
+    const expenseId = Utilities.getUuid();
+    const payload = [...values, expenseId].map(encodeTripCell_);
+    receipt = { id, generation, tripId: draft.tripId, draftHash: boundHash, expenseId, payload,
+      payloadHash: workbookHash_(payload), phase: 'allocated', row: empty + 2 };
+    workbookPut_(`receipt:${id}`, receipt);
+    workbookPut_(`draft:${slot}`, id);
+  }
+  draft.sheet.getRange(draft.first + 22, 2).setValue('Saving expense');
+  if (receipt.phase !== 'committed') {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES);
+    if (sheet.getRange(receipt.row, 1, 1, 8).getValues()[0].some(value => value !== '')) {
+      throw new Error('Allocated row changed. Organizer reconciliation is required; draft retained.');
+    }
+    receipt.phase = 'writing';
+    workbookPut_(`receipt:${receipt.id}`, receipt);
+    sheet.getRange(receipt.row, 1, 1, 8).setValues([receipt.payload.map(decodeTripCell_)]);
+    SpreadsheetApp.flush();
+    if (!reconcileWorkbookReceipt_(receipt)) throw new Error('Expense write could not be verified. Retain this request ID.');
+  }
+  // Rotate the generation with the acknowledgement/checkbox in one range write. A new explicit
+  // tap may create an identical legitimate expense; a delayed event still sees an unchecked box.
+  const acknowledgement = draft.sheet.getRange(draft.first + 12, 2, 11, 1).getValues();
+  acknowledgement[0] = [false];
+  acknowledgement[1] = [`=IF(B${draft.first + 12},"Pending — wait for script acknowledgement",B${draft.first + 22})`];
+  acknowledgement[6] = [Utilities.getUuid()];
+  acknowledgement[10] = [`Expense saved — ID ${receipt.expenseId}. Do not resubmit for backup errors.`];
+  draft.sheet.getRange(draft.first + 12, 2, 11, 1).setValues(acknowledgement);
+  const currentHash = workbookHash_(workbookDraft_(slot).values.map(encodeTripCell_));
+  if (currentHash === boundHash) draft.sheet.getRange(draft.first + 5, 2).clearContent();
+  SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP).getRange(SETUP_CONFIRM_CELL).setValue(false);
+  return receipt;
+}
+
+function applyWorkbookTemplate_(slot) {
+  const draft = workbookDraft_(slot);
+  const name = draft.sheet.getRange(draft.first + 2, 2).getValue();
+  const template = readWorkbookConfig_().templates.find(item => item.name === name);
+  if (!template) throw new Error('Choose an existing template.');
+  draft.sheet.getRange(draft.first + 4, 2, 6, 1).setValues([
+    [literalSheetCell_(template.description)], [''], [literalSheetCell_(template.payer)],
+    [literalSheetCell_(template.split)], [literalSheetCell_(template.currency)], [literalSheetCell_(template.category)]
+  ]);
+}
+
+function copyWorkbookExpense_(slot) {
+  const draft = workbookDraft_(slot);
+  const row = Number(draft.sheet.getRange(draft.first + 10, 2).getValue());
+  if (!Number.isInteger(row) || row < 2 || row > MAX_DATA_ROWS + 1) throw new Error('Choose an Expenses row from 2 to 501.');
+  const values = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES).getRange(row, 1, 1, 7).getValues()[0];
+  if (values.every(value => value === '')) throw new Error('Selected expense row is empty.');
+  draft.sheet.getRange(draft.first + 3, 2, 7, 1).setValues(values.map(value => [literalSheetCell_(value)]));
+  draft.sheet.getRange(draft.first + 22, 2).setValue('Copy loaded for review. Check Add expense to save a new expense.');
+}
+
+function saveWorkbookSettings_() {
+  const config = JSON.parse(JSON.stringify(readWorkbookConfig_()));
+  const sheet = workbookSheet_('Budgets');
+  const categories = sheet.getRange(9, 1, 100, 2).getValues().filter(row => row.some(value => value !== ''));
+  const categoryBudgets = Object.create(null);
+  config.categories = categories.map(([name, budget]) => {
+    const label = String(name).trim();
+    if (!label) throw new Error('A category allowance needs a category name.');
+    workbookBudgetMinor_(budget);
+    categoryBudgets[label] = budget === '' ? '' : Number(budget);
+    return label;
+  });
+  workbookBudgetMinor_(sheet.getRange('B4').getValue());
+  config.tripBudget = sheet.getRange('B4').getValue() === '' ? '' : Number(sheet.getRange('B4').getValue());
+  config.categoryBudgets = categoryBudgets;
+  if (sheet.getRange('B5').getValue() === true) config.budgetCurrency = currencyCode_(getCurrencySymbol_());
+  // Budget currency is metadata; editing B3 alone never reinterprets monetary limits.
+  saveWorkbookConfig_(config);
+  sheet.getRange('B3').setValue(config.budgetCurrency);
+  sheet.getRange('B5').setValue(false);
+}
+
+function saveWorkbookTemplates_() {
+  const rows = workbookSheet_('Quick Entry').getRange(TEMPLATE_FIRST_ROW + 1, 1, 50, 6).getValues();
+  const config = JSON.parse(JSON.stringify(readWorkbookConfig_()));
+  config.templates = rows.filter(row => row.some(value => value !== '')).map(row =>
+    Object.fromEntries(['name', 'description', 'category', 'payer', 'split', 'currency'].map((key, index) => [key, String(row[index]).trim()])));
+  saveWorkbookConfig_(config);
+}
+
+function refreshWorkbookChoices_() {
+  const config = readWorkbookConfig_();
+  const names = getRoster().map(person => person.name);
+  const choices = values => SpreadsheetApp.newDataValidation().requireValueInList(values.length ? values : [''], true)
+    .setAllowInvalid(true).build();
+  const categoryRule = choices(config.categories);
+  const templateRule = choices(config.templates.map(template => template.name));
+  const payerRule = choices(names);
+  const quick = workbookSheet_('Quick Entry');
+  for (let index = 0; index < MAX_PARTICIPANTS; index++) {
+    const first = QUICK_BLOCK_FIRST + index * QUICK_BLOCK_HEIGHT;
+    quick.getRange(first + 2, 2).setDataValidation(templateRule);
+    quick.getRange(first + 6, 2).setDataValidation(payerRule);
+    quick.getRange(first + 9, 2).setDataValidation(categoryRule);
+  }
+  SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_EXPENSES).getRange(2, 7, MAX_DATA_ROWS, 1).setDataValidation(categoryRule);
+}
+
+function reconcileWorkbookRequests_() {
+  const quick = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Quick Entry');
+  if (!quick) return;
+  const values = quick.getRange(1, 2, QUICK_BLOCK_FIRST + MAX_PARTICIPANTS * QUICK_BLOCK_HEIGHT, 1).getValues();
+  for (let slot = 1; slot <= MAX_PARTICIPANTS; slot++) {
+    const draft = workbookDraft_(slot);
+    if (values[draft.first + 11][0] !== true) continue;
+    try {
+      submitWorkbookDraft_(slot);
+    } catch (error) {
+      draft.sheet.getRange(draft.first + 22, 2).setValue(`Save not acknowledged: ${error.message}. Retain this draft and request ID.`);
+      draft.sheet.getRange(draft.first + 12, 2).setValue(false);
+    }
+  }
+}
+
+function renderWorkbookHistory_(preferredTrip) {
+  const sheet = workbookSurface_('History', 'RECOVERY HISTORY — organizer controls');
+  sheet.getRange('A2:A11').setValues([['Version ID'], ['History trip'], ['Preview version'], ['Preview'],
+    ['Source trip'], ['Destination trip'], ['Restore previewed version'], ['Operation status'],
+    ['Recover interrupted operation'], ['Maintenance rule']]);
+  [4, 8, 10].forEach(row => {
+    if (sheet.getRange(row, 2).getValue() === '') sheet.getRange(row, 2).insertCheckboxes().setValue(false);
+  });
+  const tripId = workbookTripId_();
+  const directory = workbookGet_('history-directory') || [];
+  if (!directory.some(item => item.id === tripId)) directory.push({ id: tripId,
+    name: String(SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP).getRange(SETUP_TRIP_NAME_CELL).getValue() || '(Untitled trip)').slice(0, 100) });
+  const label = item => `${item.name} [${item.id}]`;
+  const selectedLabel = sheet.getRange('B3').getValue();
+  const selected = directory.find(item => item.id === preferredTrip) ||
+    directory.find(item => label(item) === selectedLabel) || directory.find(item => item.id === tripId);
+  sheet.getRange('B3').setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(directory.map(label), true).setAllowInvalid(false).build())
+    .setValue(literalSheetCell_(label(selected)));
+  sheet.getRange('B7').setValue(tripId);
+  sheet.getRange('B11').setValue('Everyone, including owner, must pause editing during replacement.');
+  const versions = (workbookGet_(`versions:${selected.id}`) || []).slice(-20).reverse();
+  sheet.getRange('A15:D35').clearContent();
+  sheet.getRange('A15:D15').setValues([['Version ID', 'Saved UTC', 'Reason', 'Trip ID']]);
+  if (versions.length) sheet.getRange(16, 1, versions.length, 4).setValues(versions.map(version =>
+    [version.id, version.at, version.reason, selected.id]));
+  sheet.getRange('B2').setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(versions.length ? versions.map(version => version.id) : ['No versions yet'], true).setAllowInvalid(false).build());
+  sheet.getRange('A38:A41').setValues([['Pending participant slot'], ['Inspect submission'], ['Submission review'], ['Cancel inspected request']]);
+  sheet.getRange('B38').setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(Array.from({ length: 15 }, (_, index) => String(index + 1)), true).setAllowInvalid(false).build());
+  [39, 41].forEach(row => {
+    if (sheet.getRange(row, 2).getValue() === '') sheet.getRange(row, 2).insertCheckboxes().setValue(false);
+  });
+}
+
+function inspectWorkbookSubmission_() {
+  workbookOrganizer_();
+  const history = workbookSheet_('History');
+  const slot = Number(history.getRange('B38').getValue());
+  const draft = workbookDraft_(slot);
+  const id = workbookGet_(`draft:${slot}`);
+  const receipt = id && workbookGet_(`receipt:${id}`);
+  if (!receipt) throw new Error('This slot has no pending submission receipt.');
+  let found = receipt.phase === 'committed';
+  let conflict = '';
+  if (!found && receipt.tripId === workbookTripId_()) {
+    try { found = reconcileWorkbookReceipt_(receipt); } catch (error) { conflict = error.message; }
+  }
+  if (found) {
+    history.getRange('B40').setValue(`Expense already saved: ${receipt.expenseId}. No retry or cancellation is needed.`);
+    draft.sheet.getRange(draft.first + 22, 2).setValue(`Expense saved — ID ${receipt.expenseId}.`);
+    workbookDelete_('request-preview');
+    return;
+  }
+  workbookPut_('request-preview', { slot, id, receiptHash: workbookHash_(receipt),
+    destinationHash: workbookRawFingerprint_(captureWorkbookRaw_()) });
+  history.getRange('B40').setValue(`Request ${id}, trip ${receipt.tripId}, amount ${receipt.payload[2]}, ` +
+    `${receipt.payload[1]}. ${conflict || 'Outcome uncertain.'} Review Expenses first. ` +
+    'Cancellation releases the draft; it never adds or deletes an expense.');
+}
+
+function cancelWorkbookSubmission_() {
+  workbookOrganizer_();
+  const history = workbookSheet_('History');
+  const preview = workbookGet_('request-preview');
+  if (!preview || Number(history.getRange('B38').getValue()) !== preview.slot ||
+      workbookGet_(`draft:${preview.slot}`) !== preview.id ||
+      workbookHash_(workbookGet_(`receipt:${preview.id}`)) !== preview.receiptHash ||
+      workbookRawFingerprint_(captureWorkbookRaw_()) !== preview.destinationHash) {
+    throw new Error('Submission or inputs changed. Inspect the pending submission again.');
+  }
+  const receipt = workbookGet_(`receipt:${preview.id}`);
+  receipt.phase = 'cancelled';
+  workbookPut_(`receipt:${preview.id}`, receipt);
+  workbookDelete_(`draft:${preview.slot}`);
+  workbookDelete_('request-preview');
+  const draft = workbookDraft_(preview.slot);
+  draft.sheet.getRange(draft.first + 12, 2).setValue(false);
+  draft.sheet.getRange(draft.first + 22, 2).setValue('Pending request cancelled. Existing expenses are unchanged. Review before submitting a new request.');
+  history.getRange('B40').setValue('Request cancelled. No expense was added or deleted.');
+}
+
+function previewWorkbookVersion_() {
+  workbookOrganizer_();
+  const sheet = workbookSheet_('History');
+  const id = String(sheet.getRange('B2').getValue());
+  const version = workbookGet_(`version:${id}`);
+  if (!version || version.id !== id) throw new Error('Choose an available recovery version.');
+  const destination = captureWorkbookRaw_();
+  const target = normalizedWorkbookRaw_(version.raw);
+  const preview = { id, sourceHash: workbookHash_(version), target,
+    destinationTrip: destination.tripId, destinationHash: workbookRawFingerprint_(destination) };
+  workbookPut_('preview', preview);
+  sheet.getRange('B5').setValue(`${version.at} | ${version.reason} | ${version.raw.expenses.filter(row => row.slice(0, 7).some(value => value !== '')).length} input rows | ${version.raw.setup[1][0]} participants | budget ${target.config.tripBudget === '' ? 'none' : target.config.tripBudget} ${target.config.budgetCurrency}`);
+  sheet.getRange('B6').setValue(version.tripId);
+  sheet.getRange('B7').setValue(destination.tripId);
+  sheet.getRange('B9').setValue('Preview ready. Pause all editing, then check Restore previewed version.');
+}
+
+function restoreWorkbookPreview_() {
+  workbookOrganizer_();
+  const sheet = workbookSheet_('History');
+  const preview = workbookGet_('preview');
+  if (!preview || sheet.getRange('B2').getValue() !== preview.id || workbookTripId_() !== preview.destinationTrip ||
+      sheet.getRange('B7').getValue() !== preview.destinationTrip || sheet.getRange('B6').getValue() !== preview.target.tripId ||
+      workbookHash_(workbookGet_(`version:${preview.id}`)) !== preview.sourceHash) {
+    throw new Error('Recovery selection or destination changed. Preview again.');
+  }
+  replaceWorkbook_('restore version', preview.target, preview.destinationHash);
+  workbookDelete_('preview');
+  sheet.getRange('B9').setValue('Version restored as unconfirmed inputs. Review and confirm on Dashboard.');
+}
+
+function confirmWorkbookV3_() {
+  let message = 'Expenses confirmed.';
+  const confirmed = withTripLock_(() => {
+    if (workbookPendingOperation_()) {
+      throw new Error('Recover the interrupted operation before confirming.');
+    }
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP);
+    sheet.getRange(SETUP_CONFIRM_CELL).setValue(false);
+    if (!validateSetupStatus()) {
+      message = 'Complete Setup before confirming.';
+      return false;
+    }
+    repairExpenseIds_();
+    const ledger = buildLedger_();
+    if (ledger.errors.length || ledger.duplicateCount) {
+      recalculateAll(true);
+      message = `Cannot confirm: ${ledger.errors.join(' | ')}${ledger.duplicateCount ? ` ${ledger.duplicateCount} duplicate warning(s) need acknowledgement in Expenses!Y.` : ''}`;
+      return false;
+    }
+    sheet.getRange(SETUP_CONFIRM_CELL).setValue(true);
+    recalculateAll(true);
+    return true;
+  });
+  safeAlert(message);
+  return confirmed;
+}
+
+function handleWorkbookEdit_(e) {
+  workbookConfigCache_ = null;
+  const organizer = PropertiesService.getDocumentProperties().getProperty('WORKBOOK_ORGANIZER');
+  if (organizer && organizer !== Session.getEffectiveUser().getEmail()) return false;
+  const previousQuiet = workbookQuiet_;
+  workbookQuiet_ = true;
+  let draft = null;
+  let receipt = null;
+  try {
+    return withTripLock_(() => {
+      const sheet = e.range.getSheet();
+      const name = sheet.getName();
+      const row = e.range.getRow();
+      const col = e.range.getColumn();
+      const cell = e.range.getA1Notation();
+      if (name === 'History' && cell === 'B10' && e.range.getValue() === true) return recoverWorkbookOperation();
+      if (workbookPendingOperation_()) {
+        throw new Error('Maintenance is unfinished. Organizer must recover the interrupted operation.');
+      }
+      if (name === 'Quick Entry' && row >= QUICK_BLOCK_FIRST && row < TEMPLATE_FIRST_ROW - 3) {
+        const slot = Math.floor((row - QUICK_BLOCK_FIRST) / QUICK_BLOCK_HEIGHT) + 1;
+        draft = workbookDraft_(slot);
+        const offset = row - draft.first;
+        if (col !== 2 || e.range.getNumRows() !== 1 || e.range.getNumColumns() !== 1) return;
+        if (offset === 2) applyWorkbookTemplate_(slot);
+        else if (offset === 11 && e.range.getValue() === true) copyWorkbookExpense_(slot);
+        else if (offset === 12 && e.range.getValue() === true) receipt = submitWorkbookDraft_(slot);
+        else if (offset === 17 && e.range.getValue() === true) resetWorkbookDraft_(slot, false);
+        else return;
+        if (offset === 11 || offset === 17) e.range.setValue(false);
+      } else if (name === 'Quick Entry' && row >= TEMPLATE_FIRST_ROW + 1 && row <= TEMPLATE_FIRST_ROW + 50) {
+        saveWorkbookTemplates_();
+        refreshWorkbookChoices_();
+      } else if (name === 'Budgets') {
+        saveWorkbookSettings_();
+        refreshWorkbookChoices_();
+      } else if (name === 'History') {
+        if (cell === 'B3') {
+          workbookDelete_('preview');
+          sheet.getRange('B2').clearContent();
+          sheet.getRange('B5:B6').clearContent();
+          renderWorkbookHistory_();
+        } else if (cell === 'B4' && e.range.getValue() === true) previewWorkbookVersion_();
+        else if (cell === 'B8' && e.range.getValue() === true) restoreWorkbookPreview_();
+        else if (cell === 'B39' && e.range.getValue() === true) inspectWorkbookSubmission_();
+        else if (cell === 'B41' && e.range.getValue() === true) cancelWorkbookSubmission_();
+        else return;
+        if (cell !== 'B3') e.range.setValue(false);
+        return;
+      } else if (name === 'Dashboard') {
+        if (cell === 'B16' && e.range.getValue() === true) confirmWorkbookV3_();
+        else if (cell !== 'B15' || e.range.getValue() !== true) return;
+        if (cell === 'B15') reconcileWorkbookRequests_();
+        e.range.setValue(false);
+      } else if (name === SHEET_EXPENSES && row >= 2 && row <= MAX_DATA_ROWS + 1 && col <= 25) {
+        SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_SETUP).getRange(SETUP_CONFIRM_CELL).setValue(false);
+        const rows = repairExpenseIds_();
+        if (col === 25) {
+          const config = readWorkbookConfig_();
+          for (let index = row - 2; index < Math.min(MAX_DATA_ROWS, row - 2 + e.range.getNumRows()); index++) {
+            const values = rows[index];
+            if (!values[7]) continue;
+            if (sheet.getRange(index + 2, 25).getValue() === true) {
+              config.acknowledgements[values[7]] = workbookExpenseSignature_(values, SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone());
+            } else delete config.acknowledgements[values[7]];
+          }
+          saveWorkbookConfig_(config);
+        } else if (col > 8) return;
+      } else if (name === SHEET_SETUP) {
+        handleEdit_(e);
+        renderWorkbookUi_(false);
+      } else return;
+      repairExpenseIds_();
+      recalculateAll(false);
+      try {
+        autoCheckpointWorkbook_();
+        renderWorkbookHistory_();
+        if (draft && receipt) draft.sheet.getRange(draft.first + 14, 2).setValue('Expense saved. Recovery status: see Dashboard.');
+      } catch (error) {
+        workbookStatus_('Recovery', `Checkpoint failed: ${error.message}. Expense saves are separate; do not resubmit them.`);
+        if (draft) draft.sheet.getRange(draft.first + 14, 2).setValue(`Recovery checkpoint failed: ${error.message}. Do not resubmit a saved expense.`);
+      }
+      workbookStatus_('Processing', `Processed ${new Date().toISOString()}`);
+    });
+  } catch (error) {
+    workbookStatus_('Processing', `Processing failed: ${error.message}`);
+    const dashboard = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Dashboard');
+    if (dashboard) dashboard.getRange('B3').setValue(`Refresh required: ${error.message}`);
+    if (draft) {
+      const id = workbookGet_(`draft:${Math.floor((draft.first - QUICK_BLOCK_FIRST) / QUICK_BLOCK_HEIGHT) + 1}`);
+      const committed = id && workbookGet_(`receipt:${id}`);
+      draft.sheet.getRange(draft.first + 22, 2).setValue(committed && committed.phase === 'committed'
+        ? `Expense saved — ID ${committed.expenseId}; processing failed: ${error.message}. Do not resubmit.`
+        : `Save not acknowledged: ${error.message}. Retain request ID; retry the same draft.`);
+      draft.sheet.getRange(draft.first + 12, 2).setValue(false);
+    }
+    return false;
+  } finally {
+    workbookQuiet_ = previousQuiet;
+  }
 }

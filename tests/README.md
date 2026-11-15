@@ -13,6 +13,7 @@ node --test tests/trip-json-dialog.test.cjs
 node --test tests/splits-fx.test.cjs
 node --test tests/timezone-rounding.test.cjs
 node --test tests/pre-push.test.cjs
+node --test tests/mobile-workbook.test.cjs
 ```
 
 No dependencies, Google credentials, live spreadsheets, or email access are required.
@@ -21,7 +22,7 @@ Hook tests additionally require Git and Git for Windows Bash at `C:\Program File
 
 ## Scope
 
-- Execute the actual `Code.js` using `node:vm`; production functions are neither copied nor replaced.
+- Execute the actual `Code.js` using `node:vm` without copying calculation or workbook implementations. Failure-path tests temporarily wrap target operations to inject interruptions.
 - Mock spreadsheet reads and writes with fresh factory data for each test. Formatting methods are inert.
 - Check integer minor-unit conversion, equal shares, deterministic remainder allocation, and amounts smaller than participant counts.
 - Check positional exact and named percentage splits, strict totals, unknown names, duplicate percentages, zero weights, decimal percentages, and seeded 2–15-person trips.
@@ -38,6 +39,22 @@ Hook tests additionally require Git and Git for Windows Bash at `C:\Program File
 - Check PDF statement pay/receive/settled states, payment-first reading order, personal expense filtering, escaped user content, and complete 500-row output.
 - Exercise real menu/B6/B7 setup confirmation, pasted roster growth, count shrink/regrowth without name or email loss, dynamic expense headers, legacy summary cleanup, and an always-live Send Reports!H:K summary.
 - Exercise trip saves from the menu and E6, repeated archive updates, JSON parts beyond one cell, 15-person/500-expense round trips, real dates, incomplete rows, inactive roster entries, confirmation restoration, save-before-load/reset behavior, import validation, formula-like text, and selected-record deletion with confirmation.
+
+## Mobile Workbook Tests and Release Checks
+
+`mobile-workbook.test.cjs` covers opt-in migration with existing archives; version 3/legacy JSON; categories, advisory budgets and budget-currency review; templates and explicit copy submission; duplicate acknowledgement invalidation; partial totals; stable ID repair; 20-version retention; invalid-setup recovery; and 15-person/500-expense capacity.
+
+Failure cases cover interrupted receipt commits, ambiguous pre-write failures, deliberate identical repeat expenses, distinct expense/checkpoint status, stale restoration previews, corrupt chunks, preservation of old committed state, and failures establishing restrictions or capacity. Separate VM executions share a workbook and lock boundary to test contended submissions followed by safe reconciliation. Interruptions are injected after every persisted maintenance phase from prepared through cleanup; pre-existing protection records survive recovery.
+
+The boundary models lock contention, range-protection records, rich-text links, formulas, and chart descriptions. It does not enforce Google permissions, execute spreadsheet formulas, render charts, emulate native apps, or establish Apps Script performance. No email or live upload is performed.
+
+Before release, use a disposable copy to:
+
+1. Upgrade as owner with all editors paused; verify input/Records preservation, authorization, protection enforcement, and actual event routing.
+2. Test Android and iPhone participant links through all 15 blocks, dropdowns, Add expense/Reset/copy controls, pending acknowledgements, narrow layout, and chart readability.
+3. Submit from two accounts, interrupt connectivity, repair a removed trigger, transfer trigger ownership, and verify that retries do not append an expense twice. Inspect/cancel an uncertain request through History before a deliberate new submission.
+4. Exercise History trip/version selection, preview invalidation, restoration of invalid drafts, interrupted-operation recovery, existing group/domain permissions, and owner pause requirements. Verify original protections survive.
+5. Measure ordinary edits separately from cold foreign-rate lookup with 500 expenses and large descriptions; verify matching settlements/PDF instructions using controlled email addresses. Refresh documentation screenshots only from those verified results.
 
 ## Visual PDF Previews
 

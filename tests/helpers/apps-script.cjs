@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const crypto = require('node:crypto');
 
 const source = readFileSync(path.join(__dirname, '../../Code.js'), 'utf8');
 
@@ -38,12 +39,36 @@ function getMockLedger(balances, overrides = {}) {
 function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26, maxRows = 1000 } = {}) {
   const cells = new Map();
   const reads = [];
+  const protections = [];
+  const charts = [];
+  const links = [];
   rows.forEach((row, rowIndex) => row.forEach((value, colIndex) => {
     cells.set(`${rowIndex + 1}:${colIndex + 1}`, value);
   }));
   const cell = (row, col) => cells.get(`${row}:${col}`) ?? '';
   const sheet = {
     reads,
+    links,
+    getSheetId: () => 1,
+    setRowHeights() { return sheet; },
+    hideColumns() { return sheet; },
+    hideRows() { return sheet; },
+    getProtections: () => protections,
+    getCharts: () => [...charts],
+    removeChart(chart) { charts.splice(charts.indexOf(chart), 1); },
+    insertChart(chart) { charts.push(chart); },
+    newChart() {
+      const chart = { ranges: [], options: {} };
+      const builder = {
+        setChartType(value) { chart.type = value; return builder; },
+        addRange(value) { chart.ranges.push(value); return builder; },
+        setPosition(...value) { chart.position = value; return builder; },
+        setOption(key, value) { chart.options[key] = value; return builder; },
+        setNumHeaders(value) { chart.headers = value; return builder; },
+        build: () => chart
+      };
+      return builder;
+    },
     cell,
     getLastRow: () => Math.max(lastRow, 0, ...[...cells.entries()]
       .filter(([, value]) => value !== '').map(([key]) => Number(key.split(':')[0]))),
@@ -87,6 +112,32 @@ function getMockSheet(rows = [], { lastRow = rows.length, maxColumns = 26, maxRo
         getNumColumns: () => width,
         getA1Notation: () => `${String.fromCharCode(64 + col)}${row}`,
         getValue: () => cell(row, col),
+        setFormula(value) { cells.set(`${row}:${col}`, value); return range; },
+        setRichTextValue(value) {
+          links.push({ row, col, ...value });
+          return range.setValue(value.text);
+        },
+        protect() {
+          let description = '';
+          let warningOnly = false;
+          let domain = false;
+          let editors = [];
+          const protection = {
+            setDescription(value) { description = value; return protection; },
+            getDescription: () => description,
+            getRange: () => range,
+            addEditor(email) { editors.push({ getEmail: () => email }); return protection; },
+            getEditors: () => editors,
+            removeEditors() { editors = []; return protection; },
+            canDomainEdit: () => domain,
+            setDomainEdit(value) { domain = value; return protection; },
+            isWarningOnly: () => warningOnly,
+            setWarningOnly(value) { warningOnly = value; return protection; },
+            remove() { protections.splice(protections.indexOf(protection), 1); }
+          };
+          protections.push(protection);
+          return protection;
+        },
         getValues() {
           reads.push({ row, col, height, width });
           return Array.from({ length: height }, (_, r) =>
@@ -164,7 +215,10 @@ function loadAppsScript({
       new Intl.DateTimeFormat('en-US', { timeZone: value });
       spreadsheetTimeZone = value;
     },
-    getId: () => 'test-spreadsheet'
+    getId: () => 'test-spreadsheet',
+    getSheets: () => [...sheets.values()],
+    moveActiveSheet() {},
+    getOwner: () => ({ getEmail: () => 'owner@example.test' })
   };
   const alerts = [];
   const menuItems = [];
@@ -200,8 +254,11 @@ function loadAppsScript({
   };
   const triggers = [];
   const fetches = [];
+  const lockStats = { held: false, waits: 0, releases: 0 };
   const context = vm.createContext({
     Date,
+    Session: { getEffectiveUser: () => ({ getEmail: () => 'owner@example.test' }) },
+    Charts: { ChartType: { COLUMN: 'COLUMN' } },
     CacheService: { getDocumentCache: () => cache },
     PropertiesService: { getDocumentProperties: () => propertyStore },
     UrlFetchApp: {
@@ -222,6 +279,16 @@ function loadAppsScript({
       }
     },
     SpreadsheetApp: {
+      ProtectionType: { RANGE: 'RANGE' },
+      newRichTextValue() {
+        const value = {};
+        const builder = {
+          setText(text) { value.text = text; return builder; },
+          setLinkUrl(url) { value.url = url; return builder; },
+          build: () => value
+        };
+        return builder;
+      },
       getActiveSpreadsheet: () => spreadsheet,
       getUi: () => ui,
       flush() {},
@@ -235,8 +302,21 @@ function loadAppsScript({
       }
     },
     Logger: { log() {} },
-    LockService: { getDocumentLock: () => ({ waitLock() {}, releaseLock() {} }) },
+    LockService: { getDocumentLock: () => ({
+      waitLock() {
+        if (lockStats.held) throw new Error('Another execution holds the workbook lock');
+        lockStats.held = true;
+        lockStats.waits++;
+      },
+      releaseLock() {
+        assert.equal(lockStats.held, true, 'Release only an acquired lock');
+        lockStats.held = false;
+        lockStats.releases++;
+      }
+    }) },
     Utilities: {
+      DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
+      computeDigest: (algorithm, value) => [...crypto.createHash('sha256').update(value).digest()],
       parseDate(value, timeZone) {
         const target = Date.parse(`${value}T00:00:00Z`);
         let instant = target;
@@ -259,7 +339,7 @@ function loadAppsScript({
   });
   vm.runInContext(source, context, { filename: 'Code.js', timeout: 1000 });
   return { app: context, sheet, setup, reports, spreadsheet, alerts, ui, menuItems,
-    properties, cacheEntries, cacheWrites, triggers, fetches };
+    properties, cacheEntries, cacheWrites, triggers, fetches, lockStats };
 }
 
 // Convert VM arrays/objects into the test realm for strict structural assertions.

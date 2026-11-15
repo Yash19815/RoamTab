@@ -25,6 +25,8 @@ Instant per-person split calculations, a live group summary panel, exact minimum
 
 ---
 
+The workflows and screenshots below describe the classic layout. The optional [mobile workbook upgrade](#mobile-workbook-upgrade) adds guided entry, budgets/charts, validation warnings, and versioned recovery without resetting existing trip inputs.
+
 ## 🌟 Why Use This Over Splitwise?
 
 * **Self-Hosted in Google Sheets:** No application subscription or ads. Supports up to 15 people and 500 expense rows per tracker; Google service quotas still apply.
@@ -148,7 +150,7 @@ Configure the trip and the group:
 Choose **Setup!E4** on desktop or mobile. Suggestions cover common timezones; type another supported name such as `America/Argentina/Buenos_Aires` when needed. The selection updates the [spreadsheet timezone](https://developers.google.com/apps-script/reference/spreadsheet/spreadsheet#setSpreadsheetTimeZone(String)) for all collaborators. Existing expense calendar dates remain unchanged, including across daylight saving offsets. FX dates, report dates, and delivery timestamps follow the selected timezone. Invalid selections restore the previous setting. Changing timezone requires setup confirmation again. Initialization and New Trip keep the current spreadsheet timezone. Reloading an existing tracker adds this control without clearing inputs.
 
 ### 2️⃣ Expenses
-Enter expenses in columns **A–F**; everything else is computed live:
+In the classic layout, enter expenses in columns **A–F**; everything else is computed live. The optional mobile upgrade below adds Category in G, a hidden ID in H, and starts participant outputs at I.
 
 | Column | Field | Type |
 |--------|-------|------|
@@ -284,6 +286,49 @@ The exact solver uses `O(n × 2^n)` time and `O(2^n)` memory, with at most 32,76
 
 ---
 
+## Mobile Workbook Upgrade
+
+The optional upgrade combines guided mobile entry, category budgets and charts, duplicate/incomplete-row checks, and versioned recovery. Existing trackers keep their classic layout until the owner explicitly upgrades them. The implementation has local automated coverage; Android/iPhone behavior, real permissions, Apps Script timing, and Google PDF delivery still require verification in a disposable spreadsheet before production use.
+
+After uploading the updated script, reload a disposable spreadsheet copy. The spreadsheet owner selects **Expense Splitter → Upgrade / Repair Mobile Workbook** on desktop and authorizes it. On a completely blank spreadsheet, run `setup()` first. Do not initialize/reset an existing trip to upgrade it. The upgrade checkpoints current raw inputs and retains saved Records. Everyone, including the owner, must pause editing during any upgrade, load/import, New Trip, or restoration.
+
+The upgrade installs one owner-run authorized edit trigger for all trips, including local-currency trips. **Repair Workbook Automation** checks the current account's actual registrations and safely reconciles pending requests. Remove old organizer-owned installations when transferring ownership; one account cannot enumerate another account's triggers. Until a request receives its own acknowledgement, it remains pending. If authorization/access fails, the owner repairs it from desktop.
+
+### Daily phone workflow
+
+1. Open **Quick Entry** in the Sheets app. Tap your participant name to reach your labeled draft block. These are shared cells; participants should use separate blocks.
+2. Choose a template or enter date, description, amount, payer, split, currency, and category. Date defaults to today in the trip timezone, currency inherits the trip base, and split defaults to everyone. Payer and amount are explicit. Templates leave amount blank.
+3. Check **Add expense**. Wait for **Expense saved** and its reference. The checkbox resets and amount clears only after acknowledgement. An explicit later submission may add an identical legitimate expense; retries reconcile the original request.
+4. To copy a bill, enter its **Expenses row number (2–501)** and check **Load copy**. Review the filled draft, then submit explicitly.
+5. Open **Dashboard** for totals and category/day/person charts. It separates consumption from payments and labels excluded input rows. Check **Refresh / retry processing** to recalculate and reconcile pending submissions.
+6. Resolve incomplete/invalid expense rows and acknowledge legitimate duplicate warnings in **Expenses!Y**. Check **Dashboard!B16** or use the existing confirmation controls to enable settlements and reports. PDF emails still use the desktop menu/editor.
+
+Dropdowns and existing checkboxes are the primary mobile controls; routine work does not require sidebars, dialogs, or script-assigned drawings. Input status uses text as well as color. Native-app navigation, layout, and trigger delivery are release checks, not established by local mocks.
+
+### Categories, templates, and budgets
+
+- **Expenses:** A:F retain their meanings; G is Category, H is a hidden stable Expense ID, I:W contain up to 15 participant outputs, X shows warnings, and Y acknowledges duplicates. Sort complete expense rows **A:Y** together. Partial-row sorting is unsupported. Clearing user fields resets the ID; pasted duplicate IDs are repaired without deleting expenses.
+- **Budgets:** `B4` is the optional trip allowance. Edit up to 100 category names/allowances in `A9:B108`. Blank means no limit; zero means zero allowance. Limits are advisory and never reject an otherwise valid expense. Uncategorized expenses still count toward trip totals.
+- **Currency review:** changing the trip base currency suspends budget comparisons. Review the allowance values, then check **Budgets!B5** to confirm them in the new currency. Limits are never silently converted or relabeled by editing the displayed metadata.
+- **Templates:** the organizer edits up to 50 rows beneath the participant blocks in **Quick Entry**, starting at row 387. Columns A:F are name, description, category, payer, split, and currency. Daily use is through each block's dropdown.
+- Version 3 JSON includes categories, budgets, templates, duplicate acknowledgements, and expense IDs. Older version 1/2 exports still load with inherited currency where needed, uncategorized rows, and fresh IDs. Classic trackers still export version 2 until upgraded. Formulas continue to archive their current values.
+
+### Recovery and interrupted actions
+
+**History!B3** selects the trip whose versions you want to browse, including prior trips with invalid setup that could not be saved as portable Records. Select a version in `B2`, check **Preview version** in `B4`, review the timestamp/input summary and source/destination, then check **Restore previewed version** in `B8`. Restoration is owner-only and returns unconfirmed inputs. Changing selection or destination inputs invalidates the preview. New Trip and loading another trip preserve occupied Quick Entry drafts bound to their original trip; reset a stale draft before using it for the new trip.
+
+Keep the latest **20 versions per trip**. Manual Save Trip and replacement operations create checkpoints; automatic checkpoints after processed edits are throttled to at most one per five minutes. This is not a five-minute backup guarantee: final edits inside that interval, missed triggers, or failed writes can remain uncheckpointed. Dashboard shows recovery status separately from expense success. A saved expense must not be resubmitted because its checkpoint failed.
+
+Versions preserve raw expense/setup drafts and the last valid budget/template configuration. Operation journals use verified, chunked data in **_Tracker State**. Do not edit that sheet. Capacity, quota, or checksum failures stop replacement without truncating inputs or silently deleting other trips. History is shared-workbook recovery storage, not a private or immutable audit log. Deleting the entire workbook is outside this recovery mechanism.
+
+If an operation stops mid-flight, use **Recover Interrupted Workbook Operation** on desktop or the owner-only **History!B10** checkbox. Recovery preserves another checkpoint first, rolls back unverified writes when a prior snapshot exists, or finishes cleanup for verified writes. Temporary restrictions are removed without deleting pre-existing protections. Owners/executing accounts can bypass protections, so they must refrain from editing during maintenance.
+
+An interrupted submission with no verifiable outcome stays unresolved rather than risking a duplicate. The owner selects its participant slot in **History!B38**, checks **Inspect submission** in `B39`, and reviews `B40` against Expenses. If necessary, **Cancel inspected request** in `B41` releases the draft without adding or deleting any expense. The participant can then review and explicitly submit a new request. A stale inspection cannot cancel a changed request.
+
+The implementation uses the [current 20-million-cell Sheets limit](https://workspaceupdates.googleblog.com/2026/09/doubled-cell-limits-in-google-sheets-now-generally-available.html) for capacity preflight. Google service execution/quota failures can still interrupt processing; a valid 500-row trip is not a promise that arbitrarily large text or unlimited trip histories are inexpensive.
+
+See the [approved design](docs/plans/mobile-expense-workbook.md), [implementation plan](docs/plans/mobile-expense-implementation.md), and [test boundaries](tests/README.md).
+
 ## Local Development with clasp
 
 Use Node.js 22+ and the [Google clasp CLI](https://github.com/google/clasp). There is no package manifest, build step, or local server.
@@ -327,7 +372,7 @@ travel-expense-excel/
 ├── AGENTS.md                 # Contributor guidelines
 ├── README.md                 # Project documentation
 ├── assets/                   # Setup, expenses, settlements, and PDF screenshots
-├── docs/plans/               # Settlement design and decision log
+├── docs/plans/               # Settlement/mobile designs, decision logs, and implementation plan
 └── tests/
     ├── calculations.test.cjs # Money, ledger, and sheet output tests
     ├── optimal-settlements.test.cjs # Exact minima, explanations, and benchmarks
@@ -335,6 +380,7 @@ travel-expense-excel/
     ├── pdf-report.test.cjs   # Personal statement content and privacy checks
     ├── timezone-rounding.test.cjs # Timezone selection, calendar dates, and whole-unit payments
     ├── trip-records.test.cjs # Archive, JSON round-trip, blank trip, and deletion checks
+    ├── mobile-workbook.test.cjs # Mobile migration, entry, budgets, recovery, and failure paths
     ├── trip-json-dialog.test.cjs # Download content and import dialog behavior
     ├── preview-pdf.cjs       # Generates sample report HTML without sending email
     ├── helpers/              # Spreadsheet boundary mocks and exact test oracle
